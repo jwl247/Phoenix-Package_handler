@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Phoenix Package Handler — Installer
-# UnitedSys — United Systems | jwl247
-# Usage: curl -fsSL https://raw.githubusercontent.com/jwl247/Phoenix-Package_handler/main/install.sh | bash
+# Phoenix Package Handler - Installer
+# UnitedSys - United Systems | jwl247
+# curl -fsSL https://raw.githubusercontent.com/jwl247/Phoenix-Package_handler/main/install.sh | bash
 
 set -euo pipefail
 
@@ -47,32 +47,32 @@ for dep in git curl python3; do
                   ok "Directories ready"
 
                   # Environment
-                  cat > "$ENV_FILE" <<ENV
-                  # Phoenix DevOps OS - Environment
-                  export PHOENIX_WORKER_URL="${WORKER_URL}"
-                  export CLONEPOOL_DIR="${CLONEPOOL_DIR}"
-                  export PATH="${INSTALL_DIR}/intake:\$PATH"
-                  ENV
+                  {
+                    echo "# Phoenix DevOps OS - Environment"
+                      echo "export PHOENIX_WORKER_URL=\"$WORKER_URL\""
+                        echo "export CLONEPOOL_DIR=\"$CLONEPOOL_DIR\""
+                          echo "export PATH=\"$INSTALL_DIR/intake:\$PATH\""
+                          } > "$ENV_FILE"
 
-                  grep -q "phoenix_env" "$HOME/.bashrc" 2>/dev/null || \
-                    echo '[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env' >> "$HOME/.bashrc"
-                    grep -q "phoenix_env" "$HOME/.zshrc" 2>/dev/null || \
-                      echo '[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env' >> "$HOME/.zshrc" 2>/dev/null || true
-                      ok "Environment configured"
+                          grep -q "phoenix_env" "$HOME/.bashrc" 2>/dev/null || \
+                            echo '[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env' >> "$HOME/.bashrc"
+                            grep -q "phoenix_env" "$HOME/.zshrc" 2>/dev/null || \
+                              echo '[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env' >> "$HOME/.zshrc" 2>/dev/null || true
+                              ok "Environment configured"
 
-                      # intake command
-                      chmod +x "$INSTALL_DIR/intake/intake.sh"
-                      sudo ln -sf "$INSTALL_DIR/intake/intake.sh" /usr/local/bin/intake 2>/dev/null || \
-                        mkdir -p "$HOME/.local/bin" && ln -sf "$INSTALL_DIR/intake/intake.sh" "$HOME/.local/bin/intake" 2>/dev/null || true
-                        ok "intake command ready"
+                              # intake command
+                              chmod +x "$INSTALL_DIR/intake/intake.sh"
+                              sudo ln -sf "$INSTALL_DIR/intake/intake.sh" /usr/local/bin/intake 2>/dev/null || \
+                                { mkdir -p "$HOME/.local/bin" && ln -sf "$INSTALL_DIR/intake/intake.sh" "$HOME/.local/bin/intake" 2>/dev/null || true; }
+                                ok "intake command ready"
 
-                        echo ""
-                        echo -e "${G}================================${N}"
-                        echo -e "${G}  PHOENIX IS ACTIVE${N}"
-                        echo -e "${G}================================${N}"
-                        echo ""
-                        echo "  Restart your terminal or run:  source ~/.phoenix_env"
-                        echo "  Then use:  intake ./yourfile.sh"
-                        echo ""
-                        echo "  Glossary access: authenticcoder.com"
-                        echo ""
+                                echo ""
+                                echo -e "${G}================================${N}"
+                                echo -e "${G}  PHOENIX IS ACTIVE${N}"
+                                echo -e "${G}================================${N}"
+                                echo ""
+                                echo "  Restart your terminal or run:  source ~/.phoenix_env"
+                                echo "  Then use:  intake ./yourfile.sh"
+                                echo ""
+                                echo "  Glossary access: authenticcoder.com"
+                                echo ""
