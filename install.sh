@@ -1,178 +1,78 @@
 #!/usr/bin/env bash
-# ============================================================
-# install.sh — Phoenix DevOps OS / UnitedSys
-# Project:   Phoenix Package Handler
-# Author:    jwl247 / Phoenix DevOps LLC
-# License:   GPL-3.0
-# Version:   1.0.0
-# ============================================================
-# PURPOSE:
-#   Bootstrap installer for Phoenix Package Handler.
-#   Runs on a clean system with zero manual setup.
-#   Clones repo, sets env vars, self-registers intake.sh.
-#
-# USAGE:
-#   curl -fsSL https://raw.githubusercontent.com/jwl247/Phoenix-Package_handler/main/install.sh | bash
-# ============================================================
+# Phoenix Package Handler — Installer
+# UnitedSys — United Systems | jwl247
+# Usage: curl -fsSL https://raw.githubusercontent.com/jwl247/Phoenix-Package_handler/main/install.sh | bash
 
 set -euo pipefail
 
-WORKER_URL="https://packages-worker.phoenix-jwl.workers.dev"
-INSTALLER_URL="https://pho-installer-worker.phoenix-jwl.workers.dev"
 REPO_URL="https://github.com/jwl247/Phoenix-Package_handler.git"
-INSTALL_DIR="${HOME}/Phoenix/package-handler"
-CLONEPOOL_DIR="${HOME}/Phoenix/clonepool"
-ENV_FILE="${HOME}/.phoenix_env"
+INSTALL_DIR="$HOME/Phoenix/package-handler"
+CLONEPOOL_DIR="$HOME/Phoenix/clonepool"
+WORKER_URL="https://packages-worker.phoenix-jwl.workers.dev"
+ENV_FILE="$HOME/.phoenix_env"
 
-# ── Colors ────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-DARK_YELLOW='\033[0;33m'
-NC='\033[0m'
+G="\033[0;32m"; Y="\033[0;33m"; N="\033[0m"
+ok()  { echo -e "${G}[OK]${N} $1"; }
+log() { echo -e "${Y}[PHOENIX]${N} $1"; }
 
-phoenix() { echo -e "  ${CYAN}[PHOENIX]${NC} $*"; }
-ok()      { echo -e "  ${GREEN}[OK]${NC} $*"; }
-warn()    { echo -e "  ${YELLOW}[WARN]${NC} $*"; }
-err()     { echo -e "  ${RED}[ERROR]${NC} $*"; exit 1; }
-
-# ── Header ────────────────────────────────────────────────────
-clear
-echo -e "${DARK_YELLOW}  ==========================================${NC}"
-echo -e "${DARK_YELLOW}   PHOENIX PACKAGE HANDLER — INSTALLER      ${NC}"
-echo -e "${DARK_YELLOW}   USys — United Systems | jwl247            ${NC}"
-echo -e "${DARK_YELLOW}  ==========================================${NC}"
+echo ""
+echo -e "${Y}================================${N}"
+echo -e "${Y}  PHOENIX PACKAGE HANDLER${N}"
+echo -e "${Y}  UnitedSys - United Systems${N}"
+echo -e "${Y}================================${N}"
 echo ""
 
-# ── Health check ──────────────────────────────────────────────
-phoenix "Connecting to Phoenix infrastructure..."
-HEALTH=$(curl -fsSL "${INSTALLER_URL}/health" 2>/dev/null || true)
-if echo "${HEALTH}" | grep -q '"ok":true'; then
-    VERSION=$(echo "${HEALTH}" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
-    ok "Connected — pho-installer-worker v${VERSION}"
-else
-    err "Cannot reach Phoenix worker. Check your connection."
-fi
+# Dependencies
+log "Checking dependencies..."
+for dep in git curl python3; do
+  if ! command -v $dep &>/dev/null; then
+      log "Installing $dep..."
+          sudo apt-get install -y $dep &>/dev/null || true
+            fi
+            done
+            ok "Dependencies ready"
 
-# ── Dependency check ──────────────────────────────────────────
-phoenix "Checking dependencies..."
+            # Clone or update repo
+            log "Fetching Phoenix Package Handler..."
+            if [[ -d "$INSTALL_DIR/.git" ]]; then
+              git -C "$INSTALL_DIR" pull --ff-only &>/dev/null
+              else
+                mkdir -p "$INSTALL_DIR"
+                  git clone "$REPO_URL" "$INSTALL_DIR" &>/dev/null
+                  fi
+                  ok "Repo ready"
 
-check_dep() {
-    if command -v "$1" &>/dev/null; then
-        ok "$1 found"
-    else
-        warn "$1 not found — attempting install..."
-        if command -v apt-get &>/dev/null; then
-            sudo apt-get install -y "$2" || warn "Could not install $1 — some features may be limited"
-        elif command -v brew &>/dev/null; then
-            brew install "$2" || warn "Could not install $1"
-        else
-            warn "Could not auto-install $1 — please install manually"
-        fi
-    fi
-}
+                  # Directories
+                  mkdir -p "$CLONEPOOL_DIR" "$HOME/.unitedsys/logs"
+                  ok "Directories ready"
 
-check_dep git git
-check_dep curl curl
-check_dep python3 python3 || check_dep python python3
+                  # Environment
+                  cat > "$ENV_FILE" <<ENV
+                  # Phoenix DevOps OS - Environment
+                  export PHOENIX_WORKER_URL="${WORKER_URL}"
+                  export CLONEPOOL_DIR="${CLONEPOOL_DIR}"
+                  export PATH="${INSTALL_DIR}/intake:\$PATH"
+                  ENV
 
-# ── Clone repo ────────────────────────────────────────────────
-phoenix "Cloning Phoenix Package Handler..."
-if [[ -d "${INSTALL_DIR}/.git" ]]; then
-    warn "Repo already exists — pulling latest..."
-    git -C "${INSTALL_DIR}" pull --ff-only
-else
-    mkdir -p "$(dirname "${INSTALL_DIR}")"
-    git clone "${REPO_URL}" "${INSTALL_DIR}"
-fi
-ok "Repo ready at ${INSTALL_DIR}"
+                  grep -q "phoenix_env" "$HOME/.bashrc" 2>/dev/null || \
+                    echo '[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env' >> "$HOME/.bashrc"
+                    grep -q "phoenix_env" "$HOME/.zshrc" 2>/dev/null || \
+                      echo '[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env' >> "$HOME/.zshrc" 2>/dev/null || true
+                      ok "Environment configured"
 
-# ── Directory structure ───────────────────────────────────────
-phoenix "Creating directory structure..."
-mkdir -p "${CLONEPOOL_DIR}"
-mkdir -p "${HOME}/.catalog"
-mkdir -p "${HOME}/.unitedsys/logs"
-ok "Directories created"
+                      # intake command
+                      chmod +x "$INSTALL_DIR/intake/intake.sh"
+                      sudo ln -sf "$INSTALL_DIR/intake/intake.sh" /usr/local/bin/intake 2>/dev/null || \
+                        mkdir -p "$HOME/.local/bin" && ln -sf "$INSTALL_DIR/intake/intake.sh" "$HOME/.local/bin/intake" 2>/dev/null || true
+                        ok "intake command ready"
 
-# ── Auth token ────────────────────────────────────────────────
-echo ""
-phoenix "Phoenix Auth Token setup"
-echo "  Your token is set via: wrangler secret put PHOENIX_AUTH"
-echo "  Leave blank to skip (read-only mode — intake reporting disabled)"
-echo ""
-read -r -p "  Enter PHOENIX_AUTH token (or press Enter to skip): " USER_AUTH
-echo ""
-
-# ── Write env file ────────────────────────────────────────────
-phoenix "Writing environment config..."
-cat > "${ENV_FILE}" <<ENV
-# Phoenix DevOps OS — Environment
-# Generated by install.sh $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-export PHOENIX_WORKER_URL="${WORKER_URL}"
-export PHOENIX_INSTALLER_URL="${INSTALLER_URL}"
-export CLONEPOOL_DIR="${CLONEPOOL_DIR}"
-export PHOENIX_AUTH="${USER_AUTH}"
-export PATH="${INSTALL_DIR}/intake:\${PATH}"
-ENV
-
-ok "Env written to ${ENV_FILE}"
-
-# ── Source env in shell rc ────────────────────────────────────
-phoenix "Adding Phoenix to shell profile..."
-SHELL_RC="${HOME}/.bashrc"
-[[ -f "${HOME}/.zshrc" ]] && SHELL_RC="${HOME}/.zshrc"
-
-if ! grep -q "phoenix_env" "${SHELL_RC}" 2>/dev/null; then
-    echo "" >> "${SHELL_RC}"
-    echo "# Phoenix DevOps OS" >> "${SHELL_RC}"
-    echo "[[ -f ~/.phoenix_env ]] && source ~/.phoenix_env" >> "${SHELL_RC}"
-    ok "Added to ${SHELL_RC}"
-else
-    ok "Already in ${SHELL_RC}"
-fi
-
-# ── Make intake executable ────────────────────────────────────
-phoenix "Setting up intake command..."
-chmod +x "${INSTALL_DIR}/intake/intake.sh"
-
-# Symlink so 'intake' works from anywhere
-if [[ -d "/usr/local/bin" ]] && [[ -w "/usr/local/bin" ]]; then
-    ln -sf "${INSTALL_DIR}/intake/intake.sh" /usr/local/bin/intake
-    ok "intake command available system-wide"
-elif sudo -n true 2>/dev/null; then
-    sudo ln -sf "${INSTALL_DIR}/intake/intake.sh" /usr/local/bin/intake
-    ok "intake command available system-wide"
-else
-    warn "Could not symlink to /usr/local/bin — use full path: ${INSTALL_DIR}/intake/intake.sh"
-fi
-
-# ── Source env and self-register ─────────────────────────────
-phoenix "Running self-registration..."
-source "${ENV_FILE}"
-"${INSTALL_DIR}/intake/intake.sh" status || warn "Status check failed — check logs"
-
-# ── Register machine ──────────────────────────────────────────
-phoenix "Registering machine with Phoenix..."
-HOSTNAME_VAL=$(hostname 2>/dev/null || echo "unknown")
-curl -fsSL -X POST "${INSTALLER_URL}/installed/register" \
-    -H "Content-Type: application/json" \
-    -d "{\"package_name\":\"phoenix-package-handler\",\"version\":\"1.0.0\",\"host\":\"${HOSTNAME_VAL}\",\"state\":\"active\"}" \
-    &>/dev/null && ok "${HOSTNAME_VAL} registered in D1" || warn "Registration failed — worker may be unreachable"
-
-# ── Done ──────────────────────────────────────────────────────
-echo ""
-echo -e "${DARK_YELLOW}  ==========================================${NC}"
-echo -e "${GREEN}   PHOENIX IS ACTIVE${NC}"
-echo -e "${GREEN}   Machine: ${HOSTNAME_VAL}${NC}"
-echo -e "${GREEN}   Handler: ${INSTALL_DIR}${NC}"
-echo -e "${GREEN}   Pool:    ${CLONEPOOL_DIR}${NC}"
-echo -e "${DARK_YELLOW}  ==========================================${NC}"
-echo ""
-echo "  Restart your terminal or run:"
-echo "    source ~/.phoenix_env"
-echo ""
-echo "  Then use intake:"
-echo "    intake ./myfile.sh"
-echo "    intake status"
-echo ""
+                        echo ""
+                        echo -e "${G}================================${N}"
+                        echo -e "${G}  PHOENIX IS ACTIVE${N}"
+                        echo -e "${G}================================${N}"
+                        echo ""
+                        echo "  Restart your terminal or run:  source ~/.phoenix_env"
+                        echo "  Then use:  intake ./yourfile.sh"
+                        echo ""
+                        echo "  Glossary access: authenticcoder.com"
+                        echo ""
