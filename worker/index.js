@@ -186,7 +186,7 @@ export default {
         const cat    = url.searchParams.get('category');
         const params = [];
         const conditions = [];
-        let query = 'SELECT g.*, c.name as category_name FROM glossary g LEFT JOIN categories c ON c.hex = g.category_hex';
+        let query = 'SELECT * FROM glossary g';
 
         if (search) { conditions.push('g.name LIKE ?');  params.push(`%${search}%`); }
         if (cat)    { conditions.push('c.name = ?');     params.push(cat); }
@@ -233,7 +233,7 @@ export default {
       if (path.startsWith('/glossary/') && req.method === 'GET') {
         const id  = decodeURIComponent(path.slice(10));
         const row = await db
-          .prepare('SELECT g.*, c.name as category_name FROM glossary g LEFT JOIN categories c ON c.hex = g.category_hex WHERE g.hex = ? OR g.name = ?')
+          .prepare('SELECT * FROM glossary g WHERE g.hex = ? OR g.name = ?')
           .bind(id, id).first();
         return row ? ok(row) : err('not found', 404);
       }
@@ -361,3 +361,4 @@ export default {
     }
   },
 };
+
