@@ -368,3 +368,58 @@ wrangler deploy
 
 Built by JW — Phoenix DevOps OS | UnitedSys — United Systems
 GPL-3.0 — Free as in freedom
+
+---
+
+## Community & Peer Review
+
+Phoenix uses an **opt-in distribution model** — reviewed content is identified by a content hash, verified via QR, advertised through an update channel, and only downloaded if you explicitly choose to pull it.
+
+> Nothing is pushed. Availability is announced. Users pull only what they choose.
+
+### How It Works
+
+```
+Create → Submit → Review → Approve → Hash → Register → Advertise → Opt-In Pull → Verify → Use
+```
+
+- **Submit** — any community member can submit an artifact for peer review
+- **Review** — human or multi-party review determines acceptability (not authenticity)
+- **Hash** — approved artifacts get a SHA-256 hex identity (the canonical fingerprint)
+- **QR** — a QR code is generated encoding the hash — a pointer to verification, not the content
+- **Advertise** — availability is announced via the update feed (metadata only, no payload)
+- **Pull** — users opt-in to fetch and verify — most never pull, incurring zero cost
+- **Verify** — hex hash is verified at pull time; QR can be scanned at any time post-distribution
+- **Revoke** — artifacts can be revoked in the registry without deleting them from the clonepool
+
+### Peer Review API (packages-worker)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | /review | — | List all submissions (filter by `?status=`) |
+| GET | /review/:hex | — | Fetch review record for a specific artifact |
+| POST | /review | ✓ | Submit an artifact for review |
+| POST | /review/:hex/vote | ✓ | Cast a vote (approve / reject / abstain) |
+| GET | /review/:hex/votes | — | View all votes on a submission |
+| POST | /review/:hex/revoke | ✓ | Revoke an approved artifact |
+| GET | /verify/:hex | — | Verify an artifact — returns status + review provenance |
+| GET | /feed | — | Opt-in availability feed of approved artifacts |
+
+### Website Pages
+
+| Page | Path | Description |
+|------|------|-------------|
+| Review Queue | `/review` | Active submissions, filterable by category/status/platform |
+| Submit | `/submit` | Submit an artifact for community review |
+| Verified Feed | `/feed` | Approved artifacts available for opt-in pull |
+| Verify | `/verify/:hex` | Verify any artifact by hex hash or QR scan |
+| Revocation Log | `/revoked` | Public log of revoked artifacts and reasons |
+
+### Full Specification
+
+See [PEER_REVIEW.md](./PEER_REVIEW.md) for the complete platform specification including:
+- All 9 lifecycle stages
+- D1 schema additions (submissions, reviews, revocations, advertisement_feed)
+- QR state system (white / grey / black)
+- Economic model and non-goals
+- Where community contributions are welcome
