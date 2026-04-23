@@ -178,6 +178,9 @@ $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 `$env:PHOENIX_INSTALL_DIR = "$INSTALL_DIR"
 "@ | Set-Content -Path $ENV_FILE -Encoding UTF8
 icacls $ENV_FILE /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+[System.Environment]::SetEnvironmentVariable("PHOENIX_AUTH", $env:PHOENIX_AUTH, "User")
+[System.Environment]::SetEnvironmentVariable("PHOENIX_WORKER_URL", $WORKER_URL, "User")
+[System.Environment]::SetEnvironmentVariable("CLONEPOOL_DIR", $CLONEPOOL_DIR, "User")
 PHX-OK "Env file written and secured."
 
 # ── PS7 profile injection ─────────────────────────────────────
