@@ -222,11 +222,13 @@ if (Test-Path $phoenixWatcher) {
 }
 
 # ── System-wide intake shim ───────────────────────────────────
-# Writes intake.cmd to System32 so `intake` works from cmd, PS, anywhere
+# ── System-wide intake shim ───────────────────────────────────
 $gitBash = "$env:ProgramFiles\Git\bin\bash.exe"
 $bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
-$gitBash = "$env:ProgramFiles\Git\bin\bash.exe"
-@"
+$intakeShim = "$env:WINDIR\System32\intake.cmd"
+if (Test-Path "$INSTALL_DIR\intake.sh") {
+    PHX-Info "Creating system-wide intake command..."
+    @"
 @echo off
 set PHOENIX_AUTH=%PHOENIX_AUTH%
 set PHOENIX_WORKER_URL=%PHOENIX_WORKER_URL%
