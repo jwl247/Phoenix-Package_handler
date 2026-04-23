@@ -191,6 +191,32 @@ if ($existing -notmatch "phoenix_env") {
     Add-Content -Path $ps7Profile -Value ". `"$ENV_FILE`""
     PHX-OK "Sourced into PS7 profile."
 }
+# ── Start watcher from profile ────────────────────────────────
+$watcherScript = "$INSTALL_DIR\phoenix_watcher.ps1"
+$watcherLine = "`$phoenixWatcher = `"$watcherScript`""
+if ((Get-Content $ps7Profile -Raw) -notmatch "PhoenixWatcher") {
+    Add-Content -Path $ps7Profile -Value ""
+    Add-Content -Path $ps7Profile -Value "# Phoenix Auto-Intake Watcher"
+    Add-Content -Path $ps7Profile -Value "`$phoenixWatcher = `"$watcherScript`""
+    Add-Content -Path $ps7Profile -Value "if (Test-Path `$phoenixWatcher) {"
+    Add-Content -Path $ps7Profile -Value "    `$existingJob = Get-Job -Name 'PhoenixWatcher' -ErrorAction SilentlyContinue"
+    Add-Content -Path $ps7Profile -Value "    if (-not `$existingJob -or `$existingJob.State -ne 'Running') {"
+    Add-Content -Path $ps7Profile -Value "        Start-Job -Name 'PhoenixWatcher' -FilePath `$phoenixWatcher | Out-Null"
+    Add-Content -Path $ps7Profile -Value "        Write-Host ' Phoenix watcher active — Downloads monitored' -ForegroundColor DarkGreen"
+    Add-Content -Path $ps7Profile -Value "    }"
+    Add-Content -Path $ps7Profile -Value "}"
+    PHX-OK "Watcher added to PS7 profile."
+}
+# ── Phoenix Auto-Intake Watcher ───────────────────────────────
+# Add this to your PS7 profile (already done by install.ps1)
+$phoenixWatcher = "$env:USERPROFILE\Phoenix\package-handler\phoenix_watcher.ps1"
+if (Test-Path $phoenixWatcher) {
+    $existingJob = Get-Job -Name "PhoenixWatcher" -ErrorAction SilentlyContinue
+    if (-not $existingJob -or $existingJob.State -ne 'Running') {
+        Start-Job -Name "PhoenixWatcher" -FilePath $phoenixWatcher | Out-Null
+        Write-Host " Phoenix watcher active — Downloads folder monitored" -ForegroundColor DarkGreen
+    }
+}
 
 # ── System-wide intake shim ───────────────────────────────────
 # Writes intake.cmd to System32 so `intake` works from cmd, PS, anywhere
