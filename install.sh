@@ -32,15 +32,18 @@ echo ""
 
 # ── Detect platform ───────────────────────────────────────────
 detect_platform() {
+  # WINDIR is always set on Windows regardless of shell
+  if [[ -n "${WINDIR:-}" ]] || [[ -n "${windir:-}" ]]; then
+    echo "windows"
+    return
+  fi
   case "$(uname -s)" in
-    Linux*)   echo "linux" ;;
-    Darwin*)  echo "macos" ;;
-    MINGW*|MSYS*|CYGWIN*) echo "gitbash" ;;
-    *)        echo "unknown" ;;
+    Linux*)            echo "linux" ;;
+    Darwin*)           echo "macos" ;;
+    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+    *)                 echo "linux" ;;
   esac
 }
-PLATFORM=$(detect_platform)
-log "Platform detected: ${PLATFORM}"
 
 # ── Check dependencies ────────────────────────────────────────
 log "Checking dependencies..."
