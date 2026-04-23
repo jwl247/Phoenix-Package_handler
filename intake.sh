@@ -131,7 +131,7 @@ get_next_version() {
   local last_num
   last_num=$(echo "${files}" \
     | xargs -I{} basename {} \
-    | grep -o 'v[0-9]*' | grep -o '[0-9]*'
+    | grep -o 'v[0-9]*' | grep -o '[0-9]*' \
     | sort -n | tail -1 || echo "0")
   echo "v$((last_num + 1))"
 }
@@ -141,8 +141,13 @@ get_latest_file() {
   local pool_dir="$1"
   local name="$2"
   ls "${pool_dir}"/v*_"${name}" 2>/dev/null \
-    | sort -t'v' -k2 -n \
-    | tail -1
+    | while read -r f; do
+        num=$(basename "${f}" | grep -o 'v[0-9]*' | grep -o '[0-9]*')
+        echo "${num} ${f}"
+      done \
+    | sort -n \
+    | tail -1 \
+    | cut -d' ' -f2-
 }
 
 # ── Write sidecar ─────────────────────────────────────────────
