@@ -21,7 +21,7 @@ SCRIPT_HEX="737363726970747332f696e74616b65"
 CLONEPOOL_DIR="${CLONEPOOL_DIR:-${HOME}/Phoenix/clonepool}"
 CATALOG_DB="${HOME}/.catalog/catalog.db"
 LOG_DIR="${HOME}/.unitedsys/logs"
-LOG_FILE="${LOG_DIR}/intake.log"get latest file
+LOG_FILE="${LOG_DIR}/intake.log"
 
 WORKER_URL="${PHOENIX_WORKER_URL:-https://packages-worker.phoenix-jwl.workers.dev}"
 PHOENIX_AUTH="${PHOENIX_AUTH:-}"
