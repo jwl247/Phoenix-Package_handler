@@ -194,13 +194,14 @@ if ($existing -notmatch "phoenix_env") {
 
 # ── System-wide intake shim ───────────────────────────────────
 # Writes intake.cmd to System32 so `intake` works from cmd, PS, anywhere
+$gitBash = "$env:ProgramFiles\Git\bin\bash.exe"
+$bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
 $intakeShim = "$env:WINDIR\System32\intake.cmd"
 if (Test-Path "$INSTALL_DIR\intake.sh") {
     PHX-Info "Creating system-wide intake command..."
-$bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
-@"
+    @"
 @echo off
-bash "$bashPath/intake.sh" %*
+"$gitBash" "$bashPath/intake.sh" %*
 "@ | Set-Content -Path $intakeShim -Encoding ASCII
     PHX-OK "intake available system-wide (intake <file> from any terminal)."
 } else {
