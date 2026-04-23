@@ -197,9 +197,10 @@ if ($existing -notmatch "phoenix_env") {
 $intakeShim = "$env:WINDIR\System32\intake.cmd"
 if (Test-Path "$INSTALL_DIR\intake.sh") {
     PHX-Info "Creating system-wide intake command..."
+$bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
 @"
 @echo off
-bash "$INSTALL_DIR\intake.sh" %*
+bash "$bashPath/intake.sh" %*
 "@ | Set-Content -Path $intakeShim -Encoding ASCII
     PHX-OK "intake available system-wide (intake <file> from any terminal)."
 } else {
