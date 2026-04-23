@@ -377,7 +377,7 @@ intake_clone() {
     return 1
   fi
 
-  local version; version=$(basename "${latest}" | grep -oP '^v\d+')
+  local version; version=$(basename "${latest}" | grep -o '^v[0-9]*')
   local dest="${PWD}/${name}"
 
   # Warn if about to overwrite
