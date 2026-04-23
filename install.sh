@@ -88,7 +88,7 @@ find_python() {
     fi
   done
   # Windows Git Bash: search common install locations dynamically
-  if [[ "${PLATFORM}" == "gitbash" ]]; then
+  if [[ "${PLATFORM}" == "windows" ]]; then
     local win_user
     win_user=$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d '\r' || true)
     for pydir in \
