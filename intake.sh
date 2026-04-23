@@ -21,7 +21,8 @@ SCRIPT_HEX="737363726970747332f696e74616b65"
 CLONEPOOL_DIR="${CLONEPOOL_DIR:-${HOME}/Phoenix/clonepool}"
 CATALOG_DB="${HOME}/.catalog/catalog.db"
 LOG_DIR="${HOME}/.unitedsys/logs"
-LOG_FILE="${LOG_DIR}/intake.log"
+LOG_FILE="${LOG_DIR}/intake.log"get latest file
+
 WORKER_URL="${PHOENIX_WORKER_URL:-https://packages-worker.phoenix-jwl.workers.dev}"
 PHOENIX_AUTH="${PHOENIX_AUTH:-}"
 
@@ -130,7 +131,7 @@ get_next_version() {
   local last_num
   last_num=$(echo "${files}" \
     | xargs -I{} basename {} \
-    | grep -oP '(?<=v)\d+' \
+    | grep -o 'v[0-9]*' | grep -o '[0-9]*'
     | sort -n | tail -1 || echo "0")
   echo "v$((last_num + 1))"
 }
@@ -139,7 +140,6 @@ get_next_version() {
 get_latest_file() {
   local pool_dir="$1"
   local name="$2"
-  # Find all versioned copies of this file, return the highest version
   ls "${pool_dir}"/v*_"${name}" 2>/dev/null \
     | sort -t'v' -k2 -n \
     | tail -1
