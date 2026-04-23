@@ -3,26 +3,28 @@
 # intake.sh — Phoenix DevOps / UnitedSys
 # Author: jwl247 / Phoenix DevOps LLC
 # License: GPL-3.0
-# Version: 1.4.0
+# Version: 1.5.0
 # ============================================================
 # PIPELINE IN:
-#   file → hex → sidecar → clonepool → custody → D1
+#   file → dup check → hex → sidecar → clonepool → custody → D1
 # PIPELINE OUT:
 #   name → hex → clonepool latest → working directory → custody → D1
+# PRUNE:
+#   walk clonepool → evict old non-latest versions > 3 days
 # ============================================================
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 SCRIPT_NAME="intake"
 SCRIPT_HEX="737363726970747332f696e74616b65"
+EVICT_DAYS=3
 
 # ── Config ────────────────────────────────────────────────────
 CLONEPOOL_DIR="${CLONEPOOL_DIR:-${HOME}/Phoenix/clonepool}"
 CATALOG_DB="${HOME}/.catalog/catalog.db"
 LOG_DIR="${HOME}/.unitedsys/logs"
 LOG_FILE="${LOG_DIR}/intake.log"
-
 WORKER_URL="${PHOENIX_WORKER_URL:-https://packages-worker.phoenix-jwl.workers.dev}"
 PHOENIX_AUTH="${PHOENIX_AUTH:-}"
 
@@ -56,11 +58,28 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] [intake:${level}] $*" | tee -a "${LOG_FILE}"
 }
 
-# ── Hex helpers ───────────────────────────────────────────────
+# ── Hex ───────────────────────────────────────────────────────
 to_hex() { echo -n "$1" | xxd -p | tr -d '\n'; }
 
 # ── File size ─────────────────────────────────────────────────
 get_size() { wc -c < "${1}" 2>/dev/null | tr -d ' ' || echo "0"; }
+
+# ── SHA256 checksum (cross platform) ─────────────────────────
+get_checksum() {
+  local file="$1"
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "${file}" | cut -d' ' -f1
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "${file}" | cut -d' ' -f1
+  else
+    # fallback — md5 if nothing else available
+    if command -v md5sum &>/dev/null; then
+      md5sum "${file}" | cut -d' ' -f1
+    else
+      echo "no-checksum"
+    fi
+  fi
+}
 
 # ── Filetype detection ────────────────────────────────────────
 detect_filetype() {
@@ -136,7 +155,6 @@ get_next_version() {
   echo "v$((last_num + 1))"
 }
 
-# Get the latest versioned file for a given name in a pool dir
 get_latest_file() {
   local pool_dir="$1"
   local name="$2"
@@ -150,16 +168,78 @@ get_latest_file() {
     | cut -d' ' -f2-
 }
 
+# ── Age of file in days ───────────────────────────────────────
+file_age_days() {
+  local file="$1"
+  local now; now=$(date +%s)
+  local modified
+  if stat -c %Y "${file}" &>/dev/null; then
+    modified=$(stat -c %Y "${file}")          # Linux
+  else
+    modified=$(stat -f %m "${file}" 2>/dev/null || echo "${now}")  # macOS/Git bash
+  fi
+  echo $(( (now - modified) / 86400 ))
+}
+
+# ── Duplicate check ───────────────────────────────────────────
+check_duplicate() {
+  local filepath="$1"
+  local pool_dir="$2"
+  local name="$3"
+
+  local latest
+  latest=$(get_latest_file "${pool_dir}" "${name}" || true)
+  [[ -z "${latest}" ]] && { echo "none"; return; }
+
+  local new_sum; new_sum=$(get_checksum "${filepath}")
+  local old_sum; old_sum=$(get_checksum "${latest}")
+
+  if [[ "${new_sum}" == "${old_sum}" ]]; then
+    echo "dup:${latest}"
+  else
+    echo "different"
+  fi
+}
+
+# ── Evict old versions for one file ──────────────────────────
+evict_old_versions() {
+  local pool_dir="$1"
+  local name="$2"
+  local silent="${3:-false}"
+
+  # Get latest file — never evict this one
+  local latest
+  latest=$(get_latest_file "${pool_dir}" "${name}" || true)
+  [[ -z "${latest}" ]] && return 0
+
+  local evicted=0
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    [[ "${f}" == "${latest}" ]] && continue  # never evict latest
+
+    local age; age=$(file_age_days "${f}")
+    if (( age > EVICT_DAYS )); then
+      rm -f "${f}"
+      log "INFO" "evicted: $(basename "${f}") (${age} days old)"
+      (( evicted++ )) || true
+    fi
+  done < <(ls "${pool_dir}"/v*_"${name}" 2>/dev/null || true)
+
+  if [[ "${silent}" != "true" ]] && (( evicted > 0 )); then
+    echo "[intake:PRUNE] ${name} — evicted ${evicted} old version(s)"
+  fi
+}
+
 # ── Write sidecar ─────────────────────────────────────────────
 write_sidecar_basic() {
   local sidecar="$1" hex="$2" orig="$3" version="$4"
   local filetype="$5" category_hex="$6" size="$7"
-  local backend="${8:-direct}" notes="${9:-}"
+  local backend="${8:-direct}" notes="${9:-}" checksum="${10:-}"
   local now; now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   mkdir -p "$(dirname "${sidecar}")"
   cat > "${sidecar}" <<SIDECAR
 {
-  "usys_intake": "1.4",
+  "usys_intake": "1.5",
   "hex_name": "${hex}",
   "original_name": "${orig}",
   "state": "white",
@@ -167,6 +247,7 @@ write_sidecar_basic() {
   "filetype": "${filetype}",
   "category_hex": "${category_hex}",
   "size_bytes": ${size},
+  "sha256": "${checksum}",
   "backend": "${backend}",
   "notes": "${notes}",
   "pool_path": "${CLONEPOOL_DIR}/${hex}",
@@ -271,11 +352,12 @@ self_register() {
   mkdir -p "${dir}"
   local self_path; self_path=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${0}")
   local size; size=$(get_size "${self_path}")
+  local checksum; checksum=$(get_checksum "${self_path}")
   cp "${self_path}" "${dir}/v1_${SCRIPT_NAME}"
   write_sidecar_basic "${dir}/${SCRIPT_HEX}.sidecar.json" \
     "${SCRIPT_HEX}" "${SCRIPT_NAME}" "v1" \
     "script:shell" "73637269707473" "${size}" "self" \
-    "intake script — self registered on first run"
+    "intake script — self registered on first run" "${checksum}"
   custody_log_local "${SCRIPT_HEX}" "${SCRIPT_NAME}" "self_register" "v1" \
     "${self_path}" "${dir}/v1_${SCRIPT_NAME}" "white" "intake"
   report_clonepool "${SCRIPT_HEX}" "${SCRIPT_NAME}" "v1" "white" "${dir}" \
@@ -302,10 +384,46 @@ intake_file() {
   local sidecar="${pool_dir}/${hex}.sidecar.json"
 
   mkdir -p "${pool_dir}"
+
+  # ── Duplicate check ────────────────────────────────────────
+  local dup_result
+  dup_result=$(check_duplicate "${filepath}" "${pool_dir}" "${orig}")
+
+  if [[ "${dup_result}" == dup:* ]]; then
+    local existing="${dup_result#dup:}"
+    local existing_ver; existing_ver=$(basename "${existing}" | grep -o '^v[0-9]*')
+    local age; age=$(file_age_days "${existing}")
+    echo ""
+    echo "[intake:DUP] ${orig} is identical to ${existing_ver} in clonepool (${age} days old)"
+    echo "  [1] Keep existing  — discard incoming file"
+    echo "  [2] Replace        — evict old, store new"
+    echo "  [3] Keep both      — version it anyway"
+    echo ""
+    read -rp "Choice [1/2/3]: " choice
+    case "${choice}" in
+      1)
+        echo "[intake:OK] Kept existing ${existing_ver} — incoming discarded"
+        return 0
+        ;;
+      2)
+        rm -f "${existing}"
+        log "INFO" "dup evicted: ${existing}"
+        ;;
+      3)
+        log "INFO" "dup: user chose to version anyway"
+        ;;
+      *)
+        echo "[intake:OK] No action taken"
+        return 0
+        ;;
+    esac
+  fi
+
   local version; version=$(get_next_version "${pool_dir}")
   local filetype; filetype=$(detect_filetype "${orig}")
   local category_hex; category_hex=$(filetype_to_category "${filetype}")
   local size; size=$(get_size "${filepath}")
+  local checksum; checksum=$(get_checksum "${filepath}")
 
   log "INFO" "intaking: ${orig} (${filetype}) as ${version}"
 
@@ -325,7 +443,7 @@ intake_file() {
   log "INFO" "stored: ${pool_dir}/${version}_${orig}"
 
   write_sidecar_basic "${sidecar}" "${hex}" "${orig}" "${version}" \
-    "${filetype}" "${category_hex}" "${size}" "${backend}" "${notes}"
+    "${filetype}" "${category_hex}" "${size}" "${backend}" "${notes}" "${checksum}"
   enrich_sidecar_companions "${sidecar}" "${companion_list}"
   custody_log_local "${hex}" "${orig}" "intake" "${version}" \
     "${filepath}" "${pool_dir}/${version}_${orig}" "white" "${backend}"
@@ -335,16 +453,20 @@ intake_file() {
   report_glossary "${hex}" "${orig}" "Intaked via ${backend}: ${filetype}" \
     "${category_hex}" "${version}" "${size}" "${pool_dir}"
 
+  # ── Auto evict old versions for this file ─────────────────
+  evict_old_versions "${pool_dir}" "${orig}" "true"
+
   echo "[intake:OK] ${orig} → clonepool ${version}"
-  echo "[intake:OK] hex:  ${hex}"
-  echo "[intake:OK] type: ${filetype}"
+  echo "[intake:OK] hex:      ${hex}"
+  echo "[intake:OK] type:     ${filetype}"
+  echo "[intake:OK] sha256:   ${checksum:0:16}..."
   [[ -n "${companion_list}" ]] && \
     echo "[intake:OK] companions: $(echo "${companion_list}" | wc -l | tr -d ' ')"
   return 0
 }
 
 # ══════════════════════════════════════════════════════════════
-# OUT — clone latest version to your current working directory
+# OUT — clone latest version to current working directory
 # ══════════════════════════════════════════════════════════════
 intake_clone() {
   local name="${1:-}"
@@ -352,11 +474,9 @@ intake_clone() {
   if [[ -z "${name}" ]]; then
     echo "[intake] Usage: intake clone <filename>"
     echo "         e.g.:  intake clone myfile.py"
-    echo "                intake clone myfile.py.lol"
     return 1
   fi
 
-  # Strip .lol if used in clone too
   [[ "${name}" == *.lol ]] && name="${name%.lol}"
 
   local hex; hex=$(to_hex "${name}")
@@ -368,7 +488,6 @@ intake_clone() {
     return 1
   fi
 
-  # Find the latest versioned file
   local latest
   latest=$(get_latest_file "${pool_dir}" "${name}")
 
@@ -380,9 +499,8 @@ intake_clone() {
   local version; version=$(basename "${latest}" | grep -o '^v[0-9]*')
   local dest="${PWD}/${name}"
 
-  # Warn if about to overwrite
   if [[ -f "${dest}" ]]; then
-    echo "[intake:WARN] '${name}' already exists in current directory — overwriting with ${version}"
+    echo "[intake:WARN] '${name}' already exists here — overwriting with ${version}"
   fi
 
   cp "${latest}" "${dest}"
@@ -395,6 +513,60 @@ intake_clone() {
   echo "[intake:OK] ${name} ${version} → ${PWD}/"
   echo "[intake:OK] This is the latest version — ready to use"
   return 0
+}
+
+# ══════════════════════════════════════════════════════════════
+# PRUNE — manual eviction of old versions across whole pool
+# ══════════════════════════════════════════════════════════════
+intake_prune() {
+  echo ""
+  echo " Scanning clonepool for versions older than ${EVICT_DAYS} days..."
+  echo ""
+
+  local total_evicted=0
+  local files_checked=0
+
+  # Walk every hex directory in the clonepool
+  for pool_dir in "${CLONEPOOL_DIR}"/*/; do
+    [[ ! -d "${pool_dir}" ]] && continue
+
+    # Find all unique file names in this pool dir
+    local names=()
+    while IFS= read -r f; do
+      local base; base=$(basename "${f}")
+      # Strip version prefix to get original name
+      local name="${base#v*_}"
+      # Add to names if not already there
+      local found=false
+      for n in "${names[@]:-}"; do [[ "${n}" == "${name}" ]] && found=true && break; done
+      [[ "${found}" == "false" ]] && names+=("${name}")
+    done < <(ls "${pool_dir}"v*_* 2>/dev/null || true)
+
+    for name in "${names[@]:-}"; do
+      [[ -z "${name}" ]] && continue
+      (( files_checked++ )) || true
+
+      # Count versions before eviction
+      local before; before=$(ls "${pool_dir}"v*_"${name}" 2>/dev/null | wc -l | tr -d ' ')
+      [[ "${before}" -le 1 ]] && continue  # only one version — never evict
+
+      evict_old_versions "${pool_dir}" "${name}" "false"
+
+      local after; after=$(ls "${pool_dir}"v*_"${name}" 2>/dev/null | wc -l | tr -d ' ')
+      local evicted=$(( before - after ))
+      (( total_evicted += evicted )) || true
+    done
+  done
+
+  echo ""
+  echo " ╔══════════════════════════════════════╗"
+  echo " ║         PRUNE COMPLETE               ║"
+  echo " ╚══════════════════════════════════════╝"
+  echo " Files checked : ${files_checked}"
+  echo " Versions evicted : ${total_evicted}"
+  echo " Retention    : ${EVICT_DAYS} days"
+  echo " Latest versions : always kept"
+  echo ""
 }
 
 # ── Intake from backend ───────────────────────────────────────
@@ -420,7 +592,8 @@ intake_from_backend() {
 
   mkdir -p "${pool_dir}"
   write_sidecar_basic "${sidecar}" "${hex}" "${pkg_name}" "${version}" \
-    "package:${backend}" "7061636b61676573" "0" "${backend}" "installed from ${backend}"
+    "package:${backend}" "7061636b61676573" "0" "${backend}" \
+    "installed from ${backend}" ""
   custody_log_local "${hex}" "${pkg_name}" "backend_install" "${version}" \
     "${backend}" "${pool_dir}" "white" "${backend}"
   report_clonepool "${hex}" "${pkg_name}" "${version}" "white" \
@@ -451,6 +624,7 @@ intake_status() {
   [[ -n "${PYTHON_CMD}" ]] \
     && echo " Python  : ${PYTHON_CMD}" \
     || echo " Python  : not found (non-critical)"
+  echo " Retention: ${EVICT_DAYS} days"
   echo " Total   : ${total}"
   echo " White   : ${white} (active)"
   echo " Grey    : ${grey} (deprecated)"
@@ -472,28 +646,30 @@ show_help() {
   Phoenix DevOps — intake v${VERSION}
 
   IN  (file → clonepool):
-    intake <file>                    Intake a file into the clonepool
-    intake <file.ext.lol>            Short syntax — strips .lol, same result
+    intake <file>                    Intake a file
+    intake <file.ext.lol>            Short syntax — strips .lol
     intake <file> [backend] [notes]  With backend tag and notes
     intake backend <pkg> <be> <ver>  Register a backend-installed package
 
   OUT (clonepool → your current directory):
-    intake clone <file>              Pull latest version to where you are now
+    intake clone <file>              Pull latest version to where you are
     intake clone <file.lol>          Short syntax works here too
 
-  INFO:
+  MAINTENANCE:
+    intake prune                     Evict old versions (>${EVICT_DAYS} days) across pool
     intake status                    Show clonepool status
     intake help                      This screen
 
-  Examples:
-    intake myfile.py.lol             Intake — short syntax
-    intake ./nginx.conf              Intake — direct
-    intake ./nginx.sh                Intake — auto-detects companions
-    intake clone myfile.py           Clone latest to current directory
-    intake clone myfile.py.lol       Same thing, short syntax
-    intake backend nodejs winget 20.11.0
+  Duplicate handling:
+    If you intake a file identical to what's already in the pool,
+    intake asks: keep existing / replace / keep both
 
-  Pipeline IN:   file → hex → sidecar → clonepool → custody → D1
+  Version eviction:
+    Old non-latest versions evict automatically after ${EVICT_DAYS} days
+    Latest version is always kept — no matter how old
+    Single-version files are never evicted
+
+  Pipeline IN:   file → dup check → hex → sidecar → clonepool → custody → D1
   Pipeline OUT:  name → hex → clonepool latest → \$PWD → custody → D1
 
   Worker  : ${WORKER_URL}
@@ -525,6 +701,7 @@ case "${1:-help}" in
   help|--help|-h) show_help ;;
   status)         intake_status ;;
   clone)          shift; intake_clone "${1:-}" ;;
+  prune)          intake_prune ;;
   backend)        shift; intake_from_backend "$@" ;;
   *)
     first_arg=$(resolve_lol "${1:-}")
