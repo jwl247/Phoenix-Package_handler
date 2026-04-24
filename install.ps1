@@ -257,6 +257,7 @@ if (Test-Path "$INSTALL_DIR\intake.sh") {
 # ── Register machine ──────────────────────────────────────────
 PHX-Info "Registering this machine with D1..."
 $regBody = @{
+    package_name = "phoenix-package-handler"
     hostname     = $env:COMPUTERNAME
     os           = "Windows"
     version      = (Get-CimInstance Win32_OperatingSystem).Caption
