@@ -231,15 +231,23 @@ if (Test-Path $phoenixWatcher) {
 }
 
 # ── System-wide intake shim ───────────────────────────────────
-# ── System-wide intake shim ───────────────────────────────────
 $gitBash = "$env:ProgramFiles\Git\bin\bash.exe"
 $bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
 $intakeShim = "$env:WINDIR\System32\intake.cmd"
+
+# Source phoenix env into Git bash profile
+$gitBashRc = "$env:USERPROFILE\.bashrc"
+$rcLine = 'source ~/.phoenix_env.sh 2>/dev/null'
+if (-not (Test-Path $gitBashRc) -or -not ((Get-Content $gitBashRc -Raw -ErrorAction SilentlyContinue) -match 'phoenix_env')) {
+    Add-Content -Path $gitBashRc -Value $rcLine
+    PHX-OK "Phoenix env sourced into Git bash profile."
+}
+
 if (Test-Path "$INSTALL_DIR\intake.sh") {
     PHX-Info "Creating system-wide intake command..."
-@"
+    @"
 @echo off
-"$gitBash" -c "source ~/.phoenix_env.sh 2>/dev/null; bash '$bashPath/intake.sh' %*"
+"$gitBash" "$bashPath/intake.sh" %*
 "@ | Set-Content -Path $intakeShim -Encoding ASCII
     PHX-OK "intake available system-wide (intake <file> from any terminal)."
 } else {
