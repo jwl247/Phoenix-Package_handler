@@ -237,7 +237,7 @@ $bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
 $intakeShim = "$env:WINDIR\System32\intake.cmd"
 
 # Write a secure env loader for Git bash
-$bashSecretsFile = "$env:WINDIR\System32\phoenix-env.cmd"
+$bashSecretsFile = "$env:USERPROFILE\phoenix-env.cmd"
 @"
 @echo off
 set PHOENIX_AUTH=$($env:PHOENIX_AUTH)
@@ -251,7 +251,7 @@ if (Test-Path "$INSTALL_DIR\intake.sh") {
     PHX-Info "Creating system-wide intake command..."
     @"
 @echo off
-call "%WINDIR%\System32\phoenix-env.cmd"
+call "%USERPROFILE%\phoenix-env.cmd"
 "$gitBash" "$bashPath/intake.sh" %*
 "@ | Set-Content -Path $intakeShim -Encoding ASCII
     PHX-OK "intake available system-wide (intake <file> from any terminal)."
