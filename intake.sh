@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 SCRIPT_NAME="intake"
 SCRIPT_HEX="737363726970747332f696e74616b65"
 EVICT_DAYS=3
@@ -651,9 +651,15 @@ show_help() {
     intake <file> [backend] [notes]  With backend tag and notes
     intake backend <pkg> <be> <ver>  Register a backend-installed package
 
+  IN  (directory → clonepool):
+    intake <directory/>              Intake entire directory with preview
+    intake <directory/> [backend]    With backend tag
+
   OUT (clonepool → your current directory):
-    intake clone <file>              Pull latest version to where you are
-    intake clone <file.lol>          Short syntax works here too
+    intake clone <file>              Pull latest file version here
+    intake clone <dir>               Pull latest directory snapshot here
+    intake clone <dir> v2            Pull specific version here
+    intake clone <file.lol>          Short syntax works too
 
   MAINTENANCE:
     intake prune                     Evict old versions (>${EVICT_DAYS} days) across pool
@@ -680,6 +686,366 @@ show_help() {
 EOF
 }
 
+#!/usr/bin/env bash
+# This is the intake_directory function + updated entry point
+# to be merged into intake.sh v1.5.0 → v1.6.0
+
+# ── Skip patterns for directory intake ───────────────────────
+SKIP_DIRS=("node_modules" ".git" "__pycache__" ".svn" "vendor" "dist" "build" ".next" ".nuxt" "venv" ".venv" "env" ".tox" "coverage" ".nyc_output" "target" "out")
+SKIP_EXTENSIONS=(".jpg" ".jpeg" ".png" ".gif" ".webp" ".svg" ".ico" ".bmp" ".tiff" ".mp4" ".mp3" ".wav" ".avi" ".mov" ".zip" ".tar" ".gz" ".rar" ".7z" ".exe" ".dll" ".so" ".dylib" ".bin" ".dat" ".db" ".sqlite" ".lock")
+
+is_skip_dir() {
+  local dir="$1"
+  local base; base=$(basename "${dir}")
+  for skip in "${SKIP_DIRS[@]}"; do
+    [[ "${base}" == "${skip}" ]] && return 0
+  done
+  return 1
+}
+
+is_skip_ext() {
+  local file="$1"
+  local ext="${file##*.}"; ext=".${ext,,}"
+  for skip in "${SKIP_EXTENSIONS[@]}"; do
+    [[ "${ext}" == "${skip}" ]] && return 0
+  done
+  return 1
+}
+
+is_known_type() {
+  local file="$1"
+  local ext="${file##*.}"; ext="${ext,,}"
+  case "${ext}" in
+    sh|bash|zsh|py|js|mjs|cjs|ts|json|yaml|yml|toml|env|\
+    conf|cfg|ini|service|timer|socket|sql|md|markdown|txt|\
+    xml|html|htm|css|c|h|cpp|hpp|rs|go|ps1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ── Human readable size ───────────────────────────────────────
+human_size() {
+  local bytes="$1"
+  if (( bytes < 1024 )); then echo "${bytes} B"
+  elif (( bytes < 1048576 )); then echo "$(( bytes / 1024 )) KB"
+  elif (( bytes < 1073741824 )); then echo "$(( bytes / 1048576 )) MB"
+  else echo "$(( bytes / 1073741824 )) GB"
+  fi
+}
+
+# ══════════════════════════════════════════════════════════════
+# DIRECTORY INTAKE
+# ══════════════════════════════════════════════════════════════
+intake_directory() {
+  local dirpath="${1:-}"
+  local backend="${2:-direct}"
+  local notes="${3:-}"
+
+  # Strip trailing slash
+  dirpath="${dirpath%/}"
+  dirpath="${dirpath%\\}"
+
+  [[ -z "${dirpath}" ]] && { echo "[intake] Usage: intake <directory/>"; return 1; }
+  [[ ! -d "${dirpath}" ]] && { echo "[intake:MISS] Directory not found: ${dirpath}"; return 1; }
+
+  local dirname; dirname=$(basename "${dirpath}")
+  local hex;     hex=$(to_hex "${dirname}")
+  local pool_dir="${CLONEPOOL_DIR}/${hex}"
+  local version; version=$(get_next_version "${pool_dir}")
+
+  echo ""
+  echo " [intake:DIR] Scanning directory..."
+  echo ""
+
+  # ── Collect files ────────────────────────────────────────
+  local all_files=()
+  local known_files=()
+  local skipped_dirs=()
+  local skipped_files=()
+  local sensitive_files=()
+  local total_size=0
+  declare -A ext_counts
+
+  while IFS= read -r -d '' f; do
+    local rel="${f#${dirpath}/}"
+
+    # Check if in a skip dir
+    local in_skip=false
+    for skip in "${SKIP_DIRS[@]}"; do
+      if [[ "${rel}" == "${skip}/"* ]] || [[ "${rel}" == *"/${skip}/"* ]]; then
+        in_skip=true
+        # Record skip dir once
+        local skip_base="${rel%%/*}"
+        local already=false
+        for s in "${skipped_dirs[@]:-}"; do [[ "$s" == "$skip_base" ]] && already=true; done
+        [[ "${already}" == "false" ]] && skipped_dirs+=("${skip_base}")
+        break
+      fi
+    done
+    [[ "${in_skip}" == "true" ]] && continue
+
+    # Check extension
+    if is_skip_ext "${f}"; then
+      skipped_files+=("${rel}")
+      continue
+    fi
+
+    if is_known_type "${f}"; then
+      known_files+=("${f}")
+      local size; size=$(get_size "${f}")
+      (( total_size += size )) || true
+
+      # Count by extension
+      local ext="${f##*.}"; ext="${ext,,}"
+      ext_counts["${ext}"]=$(( ${ext_counts["${ext}"]:-0} + 1 ))
+
+      # Flag sensitive files
+      case "$(basename "${f}")" in
+        .env|*.env|*secret*|*password*|*credential*|*token*|*auth*)
+          sensitive_files+=("${rel}") ;;
+      esac
+    else
+      skipped_files+=("${rel}")
+    fi
+  done < <(find "${dirpath}" -type f -print0 2>/dev/null)
+
+  # ── Build type summary ────────────────────────────────────
+  local type_summary=""
+  for ext in "${!ext_counts[@]}"; do
+    type_summary+=".${ext} (${ext_counts[$ext]})  "
+  done
+
+  # ── Show warning ──────────────────────────────────────────
+  echo " ╔══════════════════════════════════════════════════╗"
+  echo " ║         DIRECTORY INTAKE PREVIEW                ║"
+  echo " ╚══════════════════════════════════════════════════╝"
+  echo ""
+  echo "  Path     : ${dirpath}"
+  echo "  Version  : ${version} ($([ "${version}" == "v1" ] && echo "new" || echo "update"))"
+  echo "  Files    : ${#known_files[@]} files to intake"
+  echo "  Types    : ${type_summary}"
+  echo "  Size     : $(human_size ${total_size})"
+  echo ""
+
+  if (( ${#skipped_dirs[@]} > 0 )); then
+    echo "  Skipped  : ${skipped_dirs[*]} (ignored directories)"
+  fi
+  if (( ${#skipped_files[@]} > 0 )); then
+    echo "  Ignored  : ${#skipped_files[@]} binary/media files"
+  fi
+
+  echo ""
+
+  if (( ${#sensitive_files[@]} > 0 )); then
+    echo " ⚠  WARNING — SENSITIVE FILES DETECTED:"
+    for sf in "${sensitive_files[@]}"; do
+      echo "    → ${sf}"
+    done
+    echo " ⚠  These files will be stored in clonepool AND reported to D1"
+    echo " ⚠  D1 is a remote store — ensure this is intentional"
+    echo ""
+  fi
+
+  echo "  [1] Proceed — intake all files"
+  echo "  [2] Exclude .env and sensitive files"
+  echo "  [3] Cancel"
+  echo ""
+  read -rp "  Choice [1/2/3]: " choice
+
+  case "${choice}" in
+    1) log "INFO" "dir intake: user chose full intake" ;;
+    2)
+      log "INFO" "dir intake: user excluded sensitive files"
+      local filtered=()
+      for f in "${known_files[@]}"; do
+        local rel="${f#${dirpath}/}"
+        local is_sensitive=false
+        for sf in "${sensitive_files[@]}"; do
+          [[ "${rel}" == "${sf}" ]] && is_sensitive=true && break
+        done
+        [[ "${is_sensitive}" == "false" ]] && filtered+=("${f}")
+      done
+      known_files=("${filtered[@]}")
+      echo ""
+      echo " [intake:OK] Sensitive files excluded — proceeding with ${#known_files[@]} files"
+      ;;
+    *)
+      echo " [intake:CANCEL] Directory intake cancelled"
+      return 0
+      ;;
+  esac
+
+  echo ""
+  echo " [intake:DIR] Intaking ${#known_files[@]} files..."
+  echo ""
+
+  # ── Create directory snapshot in clonepool ────────────────
+  local snapshot_dir="${pool_dir}/${version}_${dirname}"
+  mkdir -p "${snapshot_dir}"
+
+  local success=0
+  local failed=0
+  local dir_manifest="[]"
+  local manifest_entries=""
+
+  for f in "${known_files[@]}"; do
+    local rel="${f#${dirpath}/}"
+    local file_orig; file_orig=$(basename "${f}")
+    local file_hex;  file_hex=$(to_hex "${file_orig}")
+    local file_pool="${CLONEPOOL_DIR}/${file_hex}"
+    local file_version; file_version=$(get_next_version "${file_pool}")
+    local filetype;  filetype=$(detect_filetype "${file_orig}")
+    local category_hex; category_hex=$(filetype_to_category "${filetype}")
+    local size;      size=$(get_size "${f}")
+    local checksum;  checksum=$(get_checksum "${f}")
+
+    mkdir -p "${file_pool}"
+
+    # Duplicate check — skip if identical
+    local dup_result
+    dup_result=$(check_duplicate "${f}" "${file_pool}" "${file_orig}")
+    if [[ "${dup_result}" == dup:* ]]; then
+      log "INFO" "dir dup skipped: ${rel}"
+      (( success++ )) || true
+      continue
+    fi
+
+    cp "${f}" "${file_pool}/${file_version}_${file_orig}"
+    # Also copy into snapshot dir preserving relative path
+    mkdir -p "${snapshot_dir}/$(dirname "${rel}")"
+    cp "${f}" "${snapshot_dir}/${rel}"
+
+    local sidecar="${file_pool}/${file_hex}.sidecar.json"
+    write_sidecar_basic "${sidecar}" "${file_hex}" "${file_orig}" \
+      "${file_version}" "${filetype}" "${category_hex}" "${size}" \
+      "${backend}" "dir:${dirname}/${rel}" "${checksum}"
+
+    custody_log_local "${file_hex}" "${file_orig}" "dir_intake" \
+      "${file_version}" "${f}" "${file_pool}/${file_version}_${file_orig}" \
+      "white" "${backend}"
+    report_clonepool "${file_hex}" "${file_orig}" "${file_version}" "white" \
+      "${file_pool}" "${sidecar}" "1" "${size}"
+    report_custody "${file_hex}" "${file_orig}" "dir_intake" "white" "${backend}"
+
+    # Auto evict old versions
+    evict_old_versions "${file_pool}" "${file_orig}" "true"
+
+    manifest_entries+="  {\"hex\":\"${file_hex}\",\"name\":\"${file_orig}\",\"path\":\"${rel}\",\"version\":\"${file_version}\",\"checksum\":\"${checksum}\"},"
+    (( success++ )) || true
+    echo "  [OK] ${rel}"
+  done
+
+  # ── Write directory sidecar ───────────────────────────────
+  local dir_sidecar="${pool_dir}/${hex}.sidecar.json"
+  local now; now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local dir_checksum; dir_checksum=$(get_checksum "${dirpath}" 2>/dev/null || echo "dir-no-checksum")
+
+  mkdir -p "${pool_dir}"
+  cat > "${dir_sidecar}" <<DIRSIDECAR
+{
+  "usys_intake": "1.6",
+  "type": "directory",
+  "hex_name": "${hex}",
+  "original_name": "${dirname}",
+  "state": "white",
+  "version": "${version}",
+  "snapshot_path": "${snapshot_dir}",
+  "file_count": ${success},
+  "size_bytes": ${total_size},
+  "backend": "${backend}",
+  "notes": "${notes}",
+  "pool_path": "${pool_dir}",
+  "registered_at": "${now}",
+  "updated_at": "${now}",
+  "files": [
+${manifest_entries%,}
+  ],
+  "clone_history": [{"version": "${version}", "at": "${now}"}]
+}
+DIRSIDECAR
+
+  custody_log_local "${hex}" "${dirname}" "dir_intake" "${version}" \
+    "${dirpath}" "${snapshot_dir}" "white" "${backend}"
+  report_clonepool "${hex}" "${dirname}" "${version}" "white" \
+    "${pool_dir}" "${dir_sidecar}" "1" "${total_size}"
+  report_custody "${hex}" "${dirname}" "dir_intake" "white" "${backend}"
+  report_glossary "${hex}" "${dirname}" \
+    "Directory snapshot: ${#known_files[@]} files, ${version}" \
+    "6469726563746f7279" "${version}" "${total_size}" "${pool_dir}"
+
+  echo ""
+  echo " ╔══════════════════════════════════════════════════╗"
+  echo " ║         DIRECTORY INTAKE COMPLETE               ║"
+  echo " ╚══════════════════════════════════════════════════╝"
+  echo "  Directory : ${dirname}"
+  echo "  Version   : ${version}"
+  echo "  Files     : ${success} intaked"
+  echo "  Size      : $(human_size ${total_size})"
+  echo "  Hex       : ${hex}"
+  echo "  Snapshot  : ${snapshot_dir}"
+  echo ""
+  echo "  To restore: intake clone ${dirname}"
+  echo ""
+}
+
+# ── Directory clone out ───────────────────────────────────────
+intake_clone_directory() {
+  local name="${1:-}"
+  local version="${2:-latest}"
+
+  local hex; hex=$(to_hex "${name}")
+  local pool_dir="${CLONEPOOL_DIR}/${hex}"
+  local sidecar="${pool_dir}/${hex}.sidecar.json"
+
+  if [[ ! -d "${pool_dir}" ]]; then
+    echo "[intake:MISS] '${name}' not found in clonepool"
+    return 1
+  fi
+
+  # Check if it's a directory type
+  local type
+  type=$(grep -o '"type": "directory"' "${sidecar}" 2>/dev/null || echo "")
+  if [[ -z "${type}" ]]; then
+    # Fall through to regular file clone
+    return 1
+  fi
+
+  # Find snapshot dir for requested version
+  local snapshot
+  if [[ "${version}" == "latest" ]]; then
+    snapshot=$(ls -d "${pool_dir}"/v*_"${name}" 2>/dev/null \
+      | while read -r d; do
+          num=$(basename "${d}" | grep -o 'v[0-9]*' | grep -o '[0-9]*')
+          echo "${num} ${d}"
+        done \
+      | sort -n | tail -1 | cut -d' ' -f2-)
+  else
+    snapshot="${pool_dir}/${version}_${name}"
+  fi
+
+  if [[ -z "${snapshot}" ]] || [[ ! -d "${snapshot}" ]]; then
+    echo "[intake:MISS] No snapshot found for '${name}' ${version}"
+    return 1
+  fi
+
+  local ver; ver=$(basename "${snapshot}" | grep -o '^v[0-9]*')
+  local dest="${PWD}/${name}"
+
+  if [[ -d "${dest}" ]]; then
+    echo "[intake:WARN] '${name}' already exists here — overwriting with ${ver}"
+  fi
+
+  cp -r "${snapshot}" "${dest}"
+
+  log "INFO" "dir clone out: ${name} ${ver} → ${dest}"
+  custody_log_local "${hex}" "${name}" "dir_clone_out" "${ver}" \
+    "${snapshot}" "${dest}" "white" "user"
+  report_custody "${hex}" "${name}" "dir_clone_out" "white" "user"
+
+  echo "[intake:OK] ${name}/ ${ver} → ${PWD}/"
+  echo "[intake:OK] $(ls "${dest}" | wc -l | tr -d ' ') files restored"
+  echo "[intake:OK] This is the ${ver} snapshot — ready to use"
+}
 # ── .lol resolver ─────────────────────────────────────────────
 resolve_lol() {
   local arg="${1:-}"
@@ -700,12 +1066,24 @@ self_register
 case "${1:-help}" in
   help|--help|-h) show_help ;;
   status)         intake_status ;;
-  clone)          shift; intake_clone "${1:-}" ;;
+  clone)
+    shift
+    name="${1:-}"; version="${2:-latest}"
+    [[ "${name}" == *.lol ]] && name="${name%.lol}"
+    # Try directory clone first, fall back to file clone
+    intake_clone_directory "${name}" "${version}" 2>/dev/null \
+      || intake_clone "${name}"
+    ;;
   prune)          intake_prune ;;
   backend)        shift; intake_from_backend "$@" ;;
   *)
     first_arg=$(resolve_lol "${1:-}")
     shift || true
-    intake_file "${first_arg}" "$@"
+    # Directory or file?
+    if [[ -d "${first_arg}" ]]; then
+      intake_directory "${first_arg}" "$@"
+    else
+      intake_file "${first_arg}" "$@"
+    fi
     ;;
 esac
