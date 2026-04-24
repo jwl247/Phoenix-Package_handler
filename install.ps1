@@ -245,9 +245,9 @@ if (-not (Test-Path $gitBashRc) -or -not ((Get-Content $gitBashRc -Raw -ErrorAct
 
 if (Test-Path "$INSTALL_DIR\intake.sh") {
     PHX-Info "Creating system-wide intake command..."
-    @"
+@"
 @echo off
-"$gitBash" "$bashPath/intake.sh" %*
+"$gitBash" --login "$bashPath/intake.sh" %*
 "@ | Set-Content -Path $intakeShim -Encoding ASCII
     PHX-OK "intake available system-wide (intake <file> from any terminal)."
 } else {
