@@ -231,16 +231,26 @@ if (Test-Path $phoenixWatcher) {
 }
 
 # ── System-wide intake shim ───────────────────────────────────
-$gitBash = "$env:ProgramFiles\Git\bin\bash.exe"
-$bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
-$intakeShim = "$env:WINDIR\System32\intake.cmd"
+# Write a secure env loader for Git bash
+$bashSecretsFile = "$env:WINDIR\System32\phoenix-env.cmd"
+@"
+@echo off
+set PHOENIX_AUTH=$($env:PHOENIX_AUTH)
+set PHOENIX_WORKER_URL=$WORKER_URL
+set CLONEPOOL_DIR=/c/Users/$env:USERNAME/Phoenix/clonepool
+"@ | Set-Content -Path $bashSecretsFile -Encoding ASCII
+icacls $bashSecretsFile /inheritance:r /grant:r "$($env:USERNAME):(R)" /grant:r "SYSTEM:(R)" | Out-Null
 
-# Source phoenix env into Git bash profile
-$gitBashRc = "$env:USERPROFILE\.bashrc"
-$rcLine = 'source ~/.phoenix_env.sh 2>/dev/null'
-if (-not (Test-Path $gitBashRc) -or -not ((Get-Content $gitBashRc -Raw -ErrorAction SilentlyContinue) -match 'phoenix_env')) {
-    Add-Content -Path $gitBashRc -Value $rcLine
-    PHX-OK "Phoenix env sourced into Git bash profile."
+if (Test-Path "$INSTALL_DIR\intake.sh") {
+    PHX-Info "Creating system-wide intake command..."
+    @"
+@echo off
+call "%WINDIR%\System32\phoenix-env.cmd"
+"$gitBash" "$bashPath/intake.sh" %*
+"@ | Set-Content -Path $intakeShim -Encoding ASCII
+    PHX-OK "intake available system-wide (intake <file> from any terminal)."
+} else {
+    PHX-Warn "intake.sh not in repo yet — shim skipped."
 }
 
 if (Test-Path "$INSTALL_DIR\intake.sh") {
