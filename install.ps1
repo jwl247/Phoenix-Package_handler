@@ -182,6 +182,15 @@ icacls $ENV_FILE /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
 [System.Environment]::SetEnvironmentVariable("PHOENIX_WORKER_URL", $WORKER_URL, "User")
 [System.Environment]::SetEnvironmentVariable("CLONEPOOL_DIR", $CLONEPOOL_DIR, "User")
 PHX-OK "Env file written and secured."
+# Write bash env file for Git bash to source
+$bashEnvFile = "$env:USERPROFILE\.phoenix_env.sh" -replace '\\','/'
+@"
+export PHOENIX_AUTH="$($env:PHOENIX_AUTH)"
+export PHOENIX_WORKER_URL="$WORKER_URL"
+export CLONEPOOL_DIR="/c/Users/$env:USERNAME/Phoenix/clonepool"
+"@ | Set-Content -Path "$env:USERPROFILE\.phoenix_env.sh" -Encoding UTF8
+icacls "$env:USERPROFILE\.phoenix_env.sh" /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+PHX-OK "Bash env file written and secured."
 
 # ── PS7 profile injection ─────────────────────────────────────
 $ps7Profile = "$env:USERPROFILE\Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
@@ -228,12 +237,9 @@ $bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
 $intakeShim = "$env:WINDIR\System32\intake.cmd"
 if (Test-Path "$INSTALL_DIR\intake.sh") {
     PHX-Info "Creating system-wide intake command..."
-    @"
+@"
 @echo off
-set PHOENIX_AUTH=%PHOENIX_AUTH%
-set PHOENIX_WORKER_URL=%PHOENIX_WORKER_URL%
-set CLONEPOOL_DIR=%CLONEPOOL_DIR%
-"$gitBash" "$bashPath/intake.sh" %*
+"$gitBash" -c "source ~/.phoenix_env.sh 2>/dev/null; bash '$bashPath/intake.sh' %*"
 "@ | Set-Content -Path $intakeShim -Encoding ASCII
     PHX-OK "intake available system-wide (intake <file> from any terminal)."
 } else {
