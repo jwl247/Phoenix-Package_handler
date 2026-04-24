@@ -134,7 +134,7 @@ detect_companions() {
   local companion_exts=("service" "timer" "socket" "conf" "env" "yaml" "yml" "toml" "json" "md")
   for ext in "${companion_exts[@]}"; do
     local candidate="${dir}/${name}.${ext}"
-    if [[ -f "${candidate}" && "${candidate}" != "${filepath}" ]]; then
+    if [[ -f "${candidate}" && "$(realpath "${candidate}" 2>/dev/null || echo "${candidate}")" != "$(realpath "${filepath}" 2>/dev/null || echo "${filepath}")" ]]; then
       echo "${candidate}"
       log "INFO" "companion found: ${candidate}"
     fi
