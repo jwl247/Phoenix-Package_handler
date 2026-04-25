@@ -182,8 +182,8 @@ icacls $ENV_FILE /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
 [System.Environment]::SetEnvironmentVariable("PHOENIX_WORKER_URL", $WORKER_URL, "User")
 [System.Environment]::SetEnvironmentVariable("CLONEPOOL_DIR", $CLONEPOOL_DIR, "User")
 PHX-OK "Env file written and secured."
-# Write bash env file for Git bash to source
-$bashEnvFile = "$env:USERPROFILE\.phoenix_env.sh" -replace '\\','/'
+
+# Write bash env file for Git Bash to source
 @"
 export PHOENIX_AUTH="$($env:PHOENIX_AUTH)"
 export PHOENIX_WORKER_URL="$WORKER_URL"
@@ -192,21 +192,48 @@ export CLONEPOOL_DIR="/c/Users/$env:USERNAME/Phoenix/clonepool"
 icacls "$env:USERPROFILE\.phoenix_env.sh" /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
 PHX-OK "Bash env file written and secured."
 
+# ── Resolve Git Bash path ─────────────────────────────────────
+PHX-Info "Locating Git Bash..."
+$gitBashCandidates = @(
+    "$env:ProgramFiles\Git\bin\bash.exe",
+    "$env:ProgramFiles (x86)\Git\bin\bash.exe",
+    "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe"
+)
+$gitBash = $gitBashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $gitBash) { PHX-Error "Git Bash not found after install — something went wrong." }
+PHX-OK "Git Bash found: $gitBash"
+
 # ── PS7 profile injection ─────────────────────────────────────
 $ps7Profile = "$env:USERPROFILE\Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
 New-Item -ItemType Directory -Force -Path (Split-Path $ps7Profile) | Out-Null
 if (-not (Test-Path $ps7Profile)) { New-Item -ItemType File -Force -Path $ps7Profile | Out-Null }
 $existing = Get-Content $ps7Profile -Raw -ErrorAction SilentlyContinue
+
+# Source phoenix env
 if ($existing -notmatch "phoenix_env") {
     Add-Content -Path $ps7Profile -Value ""
     Add-Content -Path $ps7Profile -Value "# Phoenix Package Handler"
     Add-Content -Path $ps7Profile -Value ". `"$ENV_FILE`""
-    PHX-OK "Sourced into PS7 profile."
+    PHX-OK "Phoenix env sourced into PS7 profile."
 }
-# ── Start watcher from profile ────────────────────────────────
+
+# ── Git Bash alias — block WSL intercept ─────────────────────
+# gbash runs any command explicitly in Git Bash, never WSL
+if ($existing -notmatch "gbash") {
+    Add-Content -Path $ps7Profile -Value ""
+    Add-Content -Path $ps7Profile -Value "# Phoenix — always use Git Bash, never WSL"
+    Add-Content -Path $ps7Profile -Value "`$env:PHOENIX_GIT_BASH = `"$gitBash`""
+    Add-Content -Path $ps7Profile -Value "function Invoke-GitBash {"
+    Add-Content -Path $ps7Profile -Value "    param([Parameter(ValueFromRemainingArguments)][string[]]`$Args)"
+    Add-Content -Path $ps7Profile -Value "    & `"$gitBash`" -c (`$Args -join ' ')"
+    Add-Content -Path $ps7Profile -Value "}"
+    Add-Content -Path $ps7Profile -Value "Set-Alias -Name gbash -Value Invoke-GitBash"
+    PHX-OK "gbash alias added — Git Bash locked in, WSL blocked."
+}
+
+# ── Watcher injection ─────────────────────────────────────────
 $watcherScript = "$INSTALL_DIR\phoenix_watcher.ps1"
-$watcherLine = "`$phoenixWatcher = `"$watcherScript`""
-if ((Get-Content $ps7Profile -Raw) -notmatch "PhoenixWatcher") {
+if ($existing -notmatch "PhoenixWatcher") {
     Add-Content -Path $ps7Profile -Value ""
     Add-Content -Path $ps7Profile -Value "# Phoenix Auto-Intake Watcher"
     Add-Content -Path $ps7Profile -Value "`$phoenixWatcher = `"$watcherScript`""
@@ -219,24 +246,21 @@ if ((Get-Content $ps7Profile -Raw) -notmatch "PhoenixWatcher") {
     Add-Content -Path $ps7Profile -Value "}"
     PHX-OK "Watcher added to PS7 profile."
 }
-# ── Phoenix Auto-Intake Watcher ───────────────────────────────
-# Add this to your PS7 profile (already done by install.ps1)
-$phoenixWatcher = "$env:USERPROFILE\Phoenix\package-handler\phoenix_watcher.ps1"
-if (Test-Path $phoenixWatcher) {
+
+# Start watcher now if available
+if (Test-Path $watcherScript) {
     $existingJob = Get-Job -Name "PhoenixWatcher" -ErrorAction SilentlyContinue
     if (-not $existingJob -or $existingJob.State -ne 'Running') {
-        Start-Job -Name "PhoenixWatcher" -FilePath $phoenixWatcher | Out-Null
+        Start-Job -Name "PhoenixWatcher" -FilePath $watcherScript | Out-Null
         Write-Host " Phoenix watcher active — Downloads folder monitored" -ForegroundColor DarkGreen
     }
 }
 
 # ── System-wide intake shim ───────────────────────────────────
-# ── System-wide intake shim ───────────────────────────────────
-$gitBash = "$env:ProgramFiles\Git\bin\bash.exe"
 $bashPath = $INSTALL_DIR -replace '\\','/' -replace '^C:','/c'
 $intakeShim = "$env:WINDIR\System32\intake.cmd"
 
-# Write a secure env loader for Git bash
+# Secure env loader for Git Bash (sets vars before bash runs)
 $bashSecretsFile = "$env:USERPROFILE\phoenix-env.cmd"
 @"
 @echo off
@@ -305,4 +329,5 @@ Write-Host ""
 Write-Host "  Open a NEW terminal, then:" -ForegroundColor Yellow
 Write-Host "    pwsh                  <- PS7" -ForegroundColor Cyan
 Write-Host "    intake <file>         <- run intake from anywhere" -ForegroundColor Cyan
+Write-Host "    gbash 'echo hello'    <- run anything in Git Bash explicitly" -ForegroundColor Cyan
 Write-Host ""
