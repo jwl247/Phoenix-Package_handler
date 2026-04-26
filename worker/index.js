@@ -676,6 +676,17 @@ export default {
           .bind(id, id).first();
         return row ? ok(row) : err('not found', 404);
       }
+      // DELETE /clonepool/:id — remove entry by hex_id or name (auth required)
+      if (path.startsWith('/clonepool/') && req.method === 'DELETE') {
+        if (!isAuthorized(req, env)) return err('unauthorized', 401);
+        const id = decodeURIComponent(path.slice(11));
+        if (!id) return err('id required', 400);
+        const existing = await db.prepare('SELECT id FROM clonepool WHERE hex_id = ? OR name = ?').bind(id, id).first();
+        if (!existing) return err('not found', 404);
+        await db.prepare('DELETE FROM clonepool WHERE hex_id = ? OR name = ?').bind(id, id).run();
+        return ok({ ok: true, deleted: id });
+      }
+
 
       // ══════════════════════════════════════════════════════════════════════
       // PACKAGES
