@@ -21,6 +21,523 @@ function isAuthorized(req, env) {
   return token && token === env.PHOENIX_AUTH;
 }
 
+// ── Platform HTML ───────────────────────────────────────────────────────────
+const HTML_PLATFORM = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phoenix Package Handler — Platform</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--accent:#f78166;--accent2:#79c0ff;--text:#e6edf3;--muted:#8b949e;--green:#56d364;--red:#f85149;--yellow:#e3b341;--purple:#bc8cff}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:16px}
+  header h1{font-size:1.1rem;font-weight:600;color:var(--accent)}
+  header span{color:var(--muted);font-size:.85rem}
+  .tabs{display:flex;gap:0;border-bottom:1px solid var(--border);background:var(--surface);padding:0 24px}
+  .tab{padding:10px 18px;cursor:pointer;border:none;background:none;color:var(--muted);font-size:.9rem;border-bottom:2px solid transparent;transition:all .15s}
+  .tab:hover{color:var(--text)}
+  .tab.active{color:var(--accent2);border-bottom-color:var(--accent2)}
+  .panel{display:none;padding:24px;max-width:1100px;margin:0 auto}
+  .panel.active{display:block}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px}
+  .card h3{font-size:.95rem;font-weight:600;margin-bottom:8px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:600}
+  .badge.white{background:#1f3a2a;color:var(--green)}
+  .badge.grey{background:#2d2a1f;color:var(--yellow)}
+  .badge.black{background:#2d1f1f;color:var(--red)}
+  .badge.pending{background:#1f2a3a;color:var(--accent2)}
+  .badge.approved{background:#1f3a2a;color:var(--green)}
+  .badge.rejected{background:#2d1f1f;color:var(--red)}
+  .badge.revoked{background:#2d1f2d;color:var(--purple)}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .row.sb{justify-content:space-between}
+  input,select,textarea{background:#0d1117;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px 12px;font-size:.9rem;font-family:inherit;width:100%}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent2)}
+  textarea{resize:vertical;min-height:80px}
+  .btn{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;transition:opacity .15s}
+  .btn:hover{opacity:.85}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.primary{background:var(--accent2);color:#0d1117}
+  .btn.success{background:var(--green);color:#0d1117}
+  .btn.danger{background:var(--red);color:#fff}
+  .btn.warn{background:var(--yellow);color:#0d1117}
+  .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+  .form-row{display:grid;gap:10px;margin-bottom:14px}
+  .form-row label{font-size:.8rem;color:var(--muted);margin-bottom:2px;display:block}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .meta{font-size:.78rem;color:var(--muted)}
+  .votes{display:flex;gap:6px;align-items:center}
+  .votes span{font-size:.8rem}
+  #toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:8px;font-size:.9rem;font-weight:500;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
+  #toast.show{opacity:1}
+  #toast.ok{background:#1f3a2a;color:var(--green);border:1px solid var(--green)}
+  #toast.err{background:#2d1f1f;color:var(--red);border:1px solid var(--red)}
+  .empty{text-align:center;color:var(--muted);padding:40px 0;font-size:.9rem}
+  .filter-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+  .filter-bar input{max-width:280px}
+  .filter-bar select{max-width:160px;width:auto}
+  details summary{cursor:pointer;color:var(--accent2);font-size:.85rem;margin-top:8px}
+  .vote-row{display:flex;gap:8px;margin-top:10px}
+  .hex{font-family:monospace;font-size:.8rem;color:var(--muted)}
+  hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+  .loading{text-align:center;padding:32px;color:var(--muted)}
+  .auth-note{background:#1a1a2a;border:1px solid #3a3a5a;border-radius:6px;padding:10px 14px;font-size:.82rem;color:var(--muted);margin-bottom:14px}
+  .auth-note b{color:var(--accent2)}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>&#9654; Phoenix Package Handler</h1>
+    <span>UnitedSys &mdash; United Systems &bull; packages-worker</span>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
+    <label style="font-size:.8rem;color:var(--muted)">Auth Token</label>
+    <input id="authToken" type="password" placeholder="PHOENIX_AUTH" style="width:200px;padding:6px 10px;font-size:.82rem">
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="showTab('glossary')">Glossary</button>
+  <button class="tab" onclick="showTab('review')">Review Queue</button>
+  <button class="tab" onclick="showTab('submit')">Submit</button>
+  <button class="tab" onclick="showTab('feed')">Opt-In Feed</button>
+  <button class="tab" onclick="showTab('verify')">Verify</button>
+</div>
+
+<!-- GLOSSARY TAB -->
+<div id="tab-glossary" class="panel active">
+  <div class="row sb" style="margin-bottom:16px">
+    <h2 style="font-size:1rem">Package Glossary</h2>
+    <button class="btn primary" onclick="openGlossaryAdd()">+ Add Entry</button>
+  </div>
+  <div class="filter-bar">
+    <input id="g-search" placeholder="Search by name..." oninput="loadGlossary()">
+    <select id="g-cat" onchange="loadGlossary()"><option value="">All Categories</option></select>
+    <select id="g-state" onchange="loadGlossary()">
+      <option value="">All States</option>
+      <option value="white">White (active)</option>
+      <option value="grey">Grey (deprecated)</option>
+      <option value="black">Black (retired)</option>
+    </select>
+    <button class="btn ghost" onclick="loadGlossary()">Refresh</button>
+  </div>
+  <div id="glossary-list"><div class="loading">Loading glossary...</div></div>
+  
+  <!-- Add/Edit Modal -->
+  <div id="glossary-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;display:flex;align-items:center;justify-content:center">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;width:560px;max-width:95vw;max-height:90vh;overflow-y:auto">
+      <h3 id="gmodal-title" style="margin-bottom:16px">Add Glossary Entry</h3>
+      <div class="grid2">
+        <div class="form-row"><label>Name *</label><input id="gf-name" placeholder="e.g. nginx.conf"></div>
+        <div class="form-row"><label>Hex (SHA-derived)</label><input id="gf-hex" placeholder="auto-generated if blank"></div>
+      </div>
+      <div class="form-row"><label>Description</label><textarea id="gf-desc" rows="2" placeholder="What does this package do?"></textarea></div>
+      <div class="grid3">
+        <div class="form-row"><label>Category</label><input id="gf-cat" placeholder="scripts, configs..."></div>
+        <div class="form-row"><label>Platform</label>
+          <select id="gf-platform"><option value="">any</option><option>linux</option><option>macos</option><option>windows</option><option>all</option></select>
+        </div>
+        <div class="form-row"><label>State</label>
+          <select id="gf-state"><option value="white">white</option><option value="grey">grey</option><option value="black">black</option></select>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="form-row"><label>Version</label><input id="gf-version" placeholder="1.0.0"></div>
+        <div class="form-row"><label>Backend</label><input id="gf-backend" placeholder="apt, brew, pip..."></div>
+      </div>
+      <div class="form-row"><label>Notes</label><input id="gf-notes" placeholder="optional notes"></div>
+      <input type="hidden" id="gf-editing-hex">
+      <div class="row" style="margin-top:16px;gap:8px;justify-content:flex-end">
+        <button class="btn ghost" onclick="closeGlossaryModal()">Cancel</button>
+        <button class="btn primary" onclick="saveGlossaryEntry()">Save Entry</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- REVIEW QUEUE TAB -->
+<div id="tab-review" class="panel">
+  <div class="row sb" style="margin-bottom:16px">
+    <h2 style="font-size:1rem">Review Queue</h2>
+    <div class="row" style="gap:8px">
+      <select id="r-status" onchange="loadReviews()">
+        <option value="">All</option>
+        <option value="pending">Pending</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+        <option value="revoked">Revoked</option>
+      </select>
+      <button class="btn ghost" onclick="loadReviews()">Refresh</button>
+    </div>
+  </div>
+  <div id="review-list"><div class="loading">Loading submissions...</div></div>
+</div>
+
+<!-- SUBMIT TAB -->
+<div id="tab-submit" class="panel">
+  <div style="max-width:600px">
+    <h2 style="font-size:1rem;margin-bottom:6px">Submit Artifact for Review</h2>
+    <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">Submit a file, package, config, or dependency for community peer review. The hex hash is the canonical identity.</p>
+    <div class="auth-note"><b>Auth required.</b> Set your PHOENIX_AUTH token in the header above before submitting.</div>
+    <div class="form-row"><label>Artifact Name *</label><input id="sf-name" placeholder="e.g. nginx.conf"></div>
+    <div class="form-row"><label>SHA-256 Hex *</label><input id="sf-hex" placeholder="64-char SHA-256 hash of the artifact"></div>
+    <div class="form-row"><label>Description</label><textarea id="sf-desc" placeholder="What does this artifact do?"></textarea></div>
+    <div class="grid2">
+      <div class="form-row"><label>Category</label><input id="sf-cat" placeholder="scripts, configs, packages..."></div>
+      <div class="form-row"><label>Platform</label>
+        <select id="sf-platform"><option value="">any</option><option>linux</option><option>macos</option><option>windows</option><option>all</option></select>
+      </div>
+    </div>
+    <div class="form-row"><label>Submitter Handle</label><input id="sf-submitter" placeholder="your handle or ID (optional)"></div>
+    <div class="form-row"><label>Artifact URL (optional pull pointer — not the content)</label><input id="sf-url" placeholder="https://..."></div>
+    <button class="btn primary" onclick="submitArtifact()" style="margin-top:8px">Submit for Review</button>
+  </div>
+</div>
+
+<!-- FEED TAB -->
+<div id="tab-feed" class="panel">
+  <div class="row sb" style="margin-bottom:16px">
+    <div>
+      <h2 style="font-size:1rem">Opt-In Availability Feed</h2>
+      <p style="color:var(--muted);font-size:.82rem;margin-top:4px">Approved artifacts available to pull. Nothing is pushed — availability is announced only.</p>
+    </div>
+    <div class="row" style="gap:8px">
+      <select id="feed-cat" onchange="loadFeed()"><option value="">All Categories</option></select>
+      <select id="feed-platform" onchange="loadFeed()">
+        <option value="">All Platforms</option>
+        <option>linux</option><option>macos</option><option>windows</option><option>all</option>
+      </select>
+      <button class="btn ghost" onclick="loadFeed()">Refresh</button>
+    </div>
+  </div>
+  <div id="feed-list"><div class="loading">Loading feed...</div></div>
+</div>
+
+<!-- VERIFY TAB -->
+<div id="tab-verify" class="panel">
+  <div style="max-width:560px">
+    <h2 style="font-size:1rem;margin-bottom:6px">Verify Artifact</h2>
+    <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">Enter a SHA-256 hex to check an artifact's verification status. Scan a QR code or paste the hash directly.</p>
+    <div class="row" style="gap:10px;margin-bottom:16px">
+      <input id="v-hex" placeholder="SHA-256 hex hash..." style="flex:1">
+      <button class="btn primary" onclick="verifyArtifact()">Verify</button>
+    </div>
+    <div id="verify-result"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const BASE = '';  // same-origin — worker serves this HTML and the API
+
+function getAuth() { return document.getElementById('authToken').value.trim(); }
+
+function toast(msg, type='ok') {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show ' + type;
+  setTimeout(() => t.className = '', 3000);
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+  if(name === 'glossary') loadGlossary();
+  if(name === 'review') loadReviews();
+  if(name === 'feed') loadFeed();
+}
+
+async function apiFetch(path, opts={}) {
+  const auth = getAuth();
+  const headers = { 'Content-Type': 'application/json' };
+  if(auth) headers['Authorization'] = 'Bearer ' + auth;
+  try {
+    const r = await fetch(BASE + path, { ...opts, headers });
+    const json = await r.json();
+    return { ok: r.ok, status: r.status, data: json };
+  } catch(e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ── GLOSSARY ────────────────────────────────────────────────────────────────
+
+async function loadGlossary() {
+  const search = document.getElementById('g-search').value;
+  const cat = document.getElementById('g-cat').value;
+  const state = document.getElementById('g-state').value;
+  let qs = [];
+  if(search) qs.push('q=' + encodeURIComponent(search));
+  if(cat) qs.push('category=' + encodeURIComponent(cat));
+  const url = '/glossary' + (qs.length ? '?' + qs.join('&') : '');
+  const res = await apiFetch(url);
+  const list = document.getElementById('glossary-list');
+  if(!res.ok) { list.innerHTML = '<div class="empty">Failed to load glossary</div>'; return; }
+  const items = (res.data.glossary || res.data || []).filter(g => !state || g.state === state);
+  if(!items.length) { list.innerHTML = '<div class="empty">No entries found</div>'; return; }
+  list.innerHTML = items.map(g => renderGlossaryEntry(g)).join('');
+  // Populate category filter
+  const cats = [...new Set(items.map(g => g.category).filter(Boolean))];
+  const catSel = document.getElementById('g-cat');
+  const curVal = catSel.value;
+  catSel.innerHTML = '<option value="">All Categories</option>' + cats.map(c => '<option value="' + c + '">' + c + '</option>').join('');
+  catSel.value = curVal;
+}
+
+function renderGlossaryEntry(g) {
+  return '<div class="card" id="gentry-' + g.hex + '">' +
+    '<div class="row sb">' +
+      '<div class="row" style="gap:8px"><b>' + esc(g.name) + '</b>' +
+      (g.state ? '<span class="badge ' + g.state + '">' + g.state + '</span>' : '') +
+      (g.category ? '<span class="badge grey">' + esc(g.category) + '</span>' : '') +
+      (g.platform ? '<span class="meta">' + esc(g.platform) + '</span>' : '') +
+      '</div>' +
+      '<div class="row" style="gap:6px">' +
+        '<button class="btn ghost" style="padding:4px 10px;font-size:.78rem" onclick="editGlossaryEntry(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">Edit</button>' +
+        '<button class="btn danger" style="padding:4px 10px;font-size:.78rem" onclick="deleteGlossaryEntry('' + esc(g.hex || g.name) + '')">Delete</button>' +
+      '</div>' +
+    '</div>' +
+    (g.description ? '<p style="margin-top:6px;font-size:.85rem;color:var(--muted)">' + esc(g.description) + '</p>' : '') +
+    '<div class="row" style="margin-top:6px;gap:12px">' +
+      (g.version ? '<span class="meta">v' + esc(g.version) + '</span>' : '') +
+      (g.backend ? '<span class="meta">via ' + esc(g.backend) + '</span>' : '') +
+      '<span class="hex">' + esc((g.hex||'').substring(0,16)) + '...</span>' +
+    '</div>' +
+  '</div>';
+}
+
+function openGlossaryAdd() {
+  document.getElementById('gmodal-title').textContent = 'Add Glossary Entry';
+  ['gf-name','gf-hex','gf-desc','gf-version','gf-backend','gf-notes','gf-cat'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('gf-state').value = 'white';
+  document.getElementById('gf-platform').value = '';
+  document.getElementById('gf-editing-hex').value = '';
+  document.getElementById('glossary-modal').style.display = 'flex';
+}
+
+function editGlossaryEntry(g) {
+  document.getElementById('gmodal-title').textContent = 'Edit Glossary Entry';
+  document.getElementById('gf-name').value = g.name || '';
+  document.getElementById('gf-hex').value = g.hex || '';
+  document.getElementById('gf-desc').value = g.description || '';
+  document.getElementById('gf-state').value = g.state || 'white';
+  document.getElementById('gf-platform').value = g.platform || '';
+  document.getElementById('gf-version').value = g.version || '';
+  document.getElementById('gf-backend').value = g.backend || '';
+  document.getElementById('gf-notes').value = g.notes || '';
+  document.getElementById('gf-cat').value = g.category || '';
+  document.getElementById('gf-editing-hex').value = g.hex || g.name;
+  document.getElementById('glossary-modal').style.display = 'flex';
+}
+
+function closeGlossaryModal() {
+  document.getElementById('glossary-modal').style.display = 'none';
+}
+
+async function saveGlossaryEntry() {
+  const editingHex = document.getElementById('gf-editing-hex').value;
+  const body = {
+    name: document.getElementById('gf-name').value.trim(),
+    hex: document.getElementById('gf-hex').value.trim(),
+    description: document.getElementById('gf-desc').value.trim(),
+    state: document.getElementById('gf-state').value,
+    platform: document.getElementById('gf-platform').value,
+    version: document.getElementById('gf-version').value.trim(),
+    backend: document.getElementById('gf-backend').value.trim(),
+    notes: document.getElementById('gf-notes').value.trim(),
+    category: document.getElementById('gf-cat').value.trim(),
+  };
+  if(!body.name) { toast('Name is required', 'err'); return; }
+  let res;
+  if(editingHex) {
+    res = await apiFetch('/glossary/' + editingHex, { method: 'PUT', body: JSON.stringify(body) });
+  } else {
+    res = await apiFetch('/glossary', { method: 'POST', body: JSON.stringify(body) });
+  }
+  if(res.ok) { toast(editingHex ? 'Entry updated' : 'Entry added'); closeGlossaryModal(); loadGlossary(); }
+  else toast('Error: ' + (res.data?.error || 'unknown'), 'err');
+}
+
+async function deleteGlossaryEntry(hexOrName) {
+  if(!confirm('Delete entry ' + hexOrName + '?')) return;
+  if(!getAuth()) { toast('Auth token required to delete', 'err'); return; }
+  const res = await apiFetch('/glossary/' + hexOrName, { method: 'DELETE' });
+  if(res.ok) { toast('Entry deleted'); loadGlossary(); }
+  else toast('Error: ' + (res.data?.error || 'unauthorized'), 'err');
+}
+
+// ── REVIEW QUEUE ─────────────────────────────────────────────────────────────
+
+async function loadReviews() {
+  const status = document.getElementById('r-status').value;
+  const url = '/review' + (status ? '?status=' + status : '');
+  const res = await apiFetch(url);
+  const list = document.getElementById('review-list');
+  if(!res.ok) { list.innerHTML = '<div class="empty">Failed to load submissions</div>'; return; }
+  const items = res.data.submissions || res.data || [];
+  if(!items.length) { list.innerHTML = '<div class="empty">No submissions found</div>'; return; }
+  list.innerHTML = items.map(s => renderSubmission(s)).join('');
+}
+
+function renderSubmission(s) {
+  return '<div class="card" id="sub-' + s.hex + '">' +
+    '<div class="row sb">' +
+      '<div><b>' + esc(s.name) + '</b> <span class="badge ' + s.status + '">' + s.status + '</span></div>' +
+      '<span class="meta">' + (s.submitted_at||'').substring(0,10) + '</span>' +
+    '</div>' +
+    (s.description ? '<p class="meta" style="margin-top:4px">' + esc(s.description) + '</p>' : '') +
+    '<div class="row" style="margin-top:6px;gap:10px">' +
+      (s.category ? '<span class="meta">&#128193; ' + esc(s.category) + '</span>' : '') +
+      (s.platform ? '<span class="meta">&#x1F4BB; ' + esc(s.platform) + '</span>' : '') +
+      '<span class="hex">' + esc((s.hex||'').substring(0,20)) + '...</span>' +
+    '</div>' +
+    '<div class="vote-row">' +
+      '<button class="btn success" style="padding:5px 12px;font-size:.8rem" onclick="castVote('' + esc(s.hex) + '','approve')">&#10003; Approve</button>' +
+      '<button class="btn danger" style="padding:5px 12px;font-size:.8rem" onclick="castVote('' + esc(s.hex) + '','reject')">&#10007; Reject</button>' +
+      '<button class="btn ghost" style="padding:5px 12px;font-size:.8rem" onclick="castVote('' + esc(s.hex) + '','abstain')">&#x25CB; Abstain</button>' +
+      '<button class="btn ghost" style="padding:5px 12px;font-size:.8rem" onclick="loadVotes('' + esc(s.hex) + '')">View Votes</button>' +
+      (s.status === 'approved' ? '<button class="btn warn" style="padding:5px 12px;font-size:.8rem" onclick="revokeArtifact('' + esc(s.hex) + '')">Revoke</button>' : '') +
+    '</div>' +
+    '<div id="votes-' + s.hex + '" style="margin-top:8px"></div>' +
+  '</div>';
+}
+
+async function castVote(hex, vote) {
+  if(!getAuth()) { toast('Auth token required to vote', 'err'); return; }
+  const reviewer = prompt('Your reviewer handle:', 'anonymous');
+  if(reviewer === null) return;
+  const notes = prompt('Notes (optional):', '');
+  const res = await apiFetch('/review/' + hex + '/vote', {
+    method: 'POST',
+    body: JSON.stringify({ vote, reviewer: reviewer||'anonymous', notes: notes||'' })
+  });
+  if(res.ok) { toast('Vote cast: ' + vote + ' — ' + (res.data.status||'')); loadReviews(); }
+  else toast('Error: ' + (res.data?.error || 'unknown'), 'err');
+}
+
+async function loadVotes(hex) {
+  const el = document.getElementById('votes-' + hex);
+  const res = await apiFetch('/review/' + hex + '/votes');
+  if(!res.ok) { el.innerHTML = '<span class="meta">Failed to load votes</span>'; return; }
+  const votes = res.data.votes || [];
+  if(!votes.length) { el.innerHTML = '<span class="meta">No votes yet</span>'; return; }
+  el.innerHTML = '<hr><div class="meta" style="margin-bottom:4px">Votes:</div>' +
+    votes.map(v => '<span class="badge ' + (v.vote==='approve'?'approved':v.vote==='reject'?'rejected':'pending') + '" style="margin-right:4px">' + esc(v.vote) + ' — ' + esc(v.reviewer) + (v.notes?' ('+esc(v.notes)+')':'') + '</span>').join(' ');
+}
+
+async function revokeArtifact(hex) {
+  if(!getAuth()) { toast('Auth token required', 'err'); return; }
+  const reason = prompt('Revocation reason:');
+  if(!reason) return;
+  const res = await apiFetch('/review/' + hex + '/revoke', {
+    method: 'POST', body: JSON.stringify({ reason, revoked_by: 'admin' })
+  });
+  if(res.ok) { toast('Artifact revoked'); loadReviews(); }
+  else toast('Error: ' + (res.data?.error || 'unknown'), 'err');
+}
+
+// ── SUBMIT ───────────────────────────────────────────────────────────────────
+
+async function submitArtifact() {
+  if(!getAuth()) { toast('Auth token required to submit', 'err'); return; }
+  const body = {
+    name: document.getElementById('sf-name').value.trim(),
+    hex: document.getElementById('sf-hex').value.trim(),
+    description: document.getElementById('sf-desc').value.trim(),
+    category: document.getElementById('sf-cat').value.trim(),
+    platform: document.getElementById('sf-platform').value,
+    submitter: document.getElementById('sf-submitter').value.trim()||'anonymous',
+    artifact_url: document.getElementById('sf-url').value.trim()||null,
+  };
+  if(!body.name||!body.hex) { toast('Name and hex are required', 'err'); return; }
+  const res = await apiFetch('/review', { method: 'POST', body: JSON.stringify(body) });
+  if(res.ok) {
+    toast('Submitted for review!');
+    ['sf-name','sf-hex','sf-desc','sf-cat','sf-submitter','sf-url'].forEach(id => document.getElementById(id).value='');
+  } else toast('Error: ' + (res.data?.error || 'unknown'), 'err');
+}
+
+// ── FEED ─────────────────────────────────────────────────────────────────────
+
+async function loadFeed() {
+  const cat = document.getElementById('feed-cat').value;
+  const platform = document.getElementById('feed-platform').value;
+  let qs = [];
+  if(cat) qs.push('category=' + encodeURIComponent(cat));
+  if(platform) qs.push('platform=' + encodeURIComponent(platform));
+  const url = '/feed' + (qs.length ? '?' + qs.join('&') : '');
+  const res = await apiFetch(url);
+  const list = document.getElementById('feed-list');
+  if(!res.ok) { list.innerHTML = '<div class="empty">Failed to load feed</div>'; return; }
+  const items = res.data.feed || res.data || [];
+  if(!items.length) { list.innerHTML = '<div class="empty">No approved artifacts in the feed yet</div>'; return; }
+  list.innerHTML = items.map(f => '<div class="card">' +
+    '<div class="row sb">' +
+      '<div><b>' + esc(f.name) + '</b>' +
+      (f.revoked ? '<span class="badge black" style="margin-left:6px">revoked</span>' : '<span class="badge white" style="margin-left:6px">available</span>') +
+      (f.category ? '<span class="badge grey" style="margin-left:6px">' + esc(f.category) + '</span>' : '') +
+      '</div>' +
+      '<span class="meta">' + (f.advertised_at||'').substring(0,10) + '</span>' +
+    '</div>' +
+    (f.description ? '<p class="meta" style="margin-top:4px">' + esc(f.description) + '</p>' : '') +
+    '<div class="row" style="margin-top:6px;gap:10px">' +
+      '<span class="meta">&#10003; ' + (f.approvals||0) + ' approvals</span>' +
+      (f.platform ? '<span class="meta">&#x1F4BB; ' + esc(f.platform) + '</span>' : '') +
+      '<span class="hex">' + esc((f.hex||'').substring(0,20)) + '...</span>' +
+    '</div>' +
+    (f.artifact_url ? '<div style="margin-top:8px"><a href="' + esc(f.artifact_url) + '" target="_blank" rel="noopener" style="color:var(--accent2);font-size:.82rem">Opt-in pull link &rarr;</a></div>' : '') +
+  '</div>').join('');
+  // Populate category filter from feed items
+  const cats = [...new Set(items.map(i => i.category).filter(Boolean))];
+  const catSel = document.getElementById('feed-cat');
+  catSel.innerHTML = '<option value="">All Categories</option>' + cats.map(c => '<option>' + esc(c) + '</option>').join('');
+}
+
+// ── VERIFY ───────────────────────────────────────────────────────────────────
+
+async function verifyArtifact() {
+  const hex = document.getElementById('v-hex').value.trim();
+  if(!hex) { toast('Enter a hex hash', 'err'); return; }
+  const res = await apiFetch('/verify/' + hex);
+  const el = document.getElementById('verify-result');
+  if(!res.ok && res.status !== 200) { el.innerHTML = '<div class="card"><span class="badge rejected">Error loading</span></div>'; return; }
+  const d = res.data;
+  const statusColor = d.verified ? 'approved' : (d.status === 'revoked' ? 'black' : d.status === 'pending' ? 'pending' : 'rejected');
+  el.innerHTML = '<div class="card">' +
+    '<div class="row" style="gap:10px;margin-bottom:8px">' +
+      '<span class="badge ' + statusColor + '" style="font-size:.9rem;padding:4px 12px">' + (d.status||'unknown') + '</span>' +
+      (d.verified ? '<span style="color:var(--green)">&#10003; Verified</span>' : '<span style="color:var(--red)">&#10007; Not Verified</span>') +
+    '</div>' +
+    (d.name ? '<div><b>' + esc(d.name) + '</b></div>' : '') +
+    (d.description ? '<p class="meta" style="margin-top:4px">' + esc(d.description) + '</p>' : '') +
+    '<div class="row" style="margin-top:8px;gap:12px">' +
+      (d.reviewed_at ? '<span class="meta">Reviewed: ' + esc(d.reviewed_at.substring(0,10)) + '</span>' : '') +
+      (d.revoked_by ? '<span class="meta">Revoked by: ' + esc(d.revoked_by) + '</span>' : '') +
+      (d.reason ? '<span class="meta">Reason: ' + esc(d.reason) + '</span>' : '') +
+    '</div>' +
+    '<div class="hex" style="margin-top:8px">' + esc(hex) + '</div>' +
+  '</div>';
+}
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+function esc(s) {
+  if(s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Auto-load on start
+loadGlossary();
+</script>
+</body>
+</html>`;
+
+
 // ── Router ───────────────────────────────────────────────────────────────────
 export default {
   async fetch(req, env) {
@@ -36,6 +553,12 @@ export default {
     try {
 
       // ── Health ──────────────────────────────────────────────────────────────
+      // ── Platform UI (GET /platform or browser request to /)
+      if (path === '/platform' || (path === '/' && (req.headers.get('Accept')||'').includes('text/html'))) {
+        return new Response(HTML_PLATFORM, { status: 200, headers: { 'Content-Type': 'text/html;charset=UTF-8', 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      // ── Health (GET / or GET /health — API clients) ──────────────────────────
       if (path === '/' || path === '/health') {
         const tables = await db
           .prepare("SELECT count(*) as n FROM sqlite_master WHERE type='table'")
@@ -47,6 +570,7 @@ export default {
           brand: 'USys — United Systems',
           db: 'phoenix_dev_db',
           tables: tables.n,
+          platform_ui: '/platform',
         });
       }
 
