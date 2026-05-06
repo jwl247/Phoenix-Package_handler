@@ -31,7 +31,7 @@ echo -e "${Y}================================${N}"
 echo ""
 
 # ── Detect platform ───────────────────────────────────────────
-detect_platform() {
+PLATFORM=$(detect_platform() {
   # WINDIR is always set on Windows regardless of shell
   if [[ -n "${WINDIR:-}" ]] || [[ -n "${windir:-}" ]]; then
     echo "windows"
