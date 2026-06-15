@@ -81,6 +81,7 @@ require() {
 require git
 require curl
 require python3
+require pip3 || sudo apt install -y python3-pip
 
 if ! command -v sqlite3 &>/dev/null; then
   warn "sqlite3 not found — optional, continuing"
