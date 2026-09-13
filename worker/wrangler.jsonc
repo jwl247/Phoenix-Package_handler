@@ -19,7 +19,7 @@
   // Tail:   wrangler tail (now tails the harmless standalone name, not prod)
   // Secret: wrangler secret put PHOENIX_AUTH (harmless — different worker)
 
-  "name": "packages-worker-standalone-DO-NOT-DEPLOY-see-comment",
+  "name": "packages-worker-standalone-do-not-deploy-see-comment",
   "main": "index.js",
   "compatibility_date": "2025-01-01",
 
