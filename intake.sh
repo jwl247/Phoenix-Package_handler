@@ -61,6 +61,14 @@ log() {
 # ── Hex ───────────────────────────────────────────────────────
 to_hex() { echo -n "$1" | xxd -p | tr -d '\n'; }
 
+# ── Sensitive-name heuristic — shared by single-file and directory intake ──
+is_sensitive_name() {
+  case "$(basename "$1")" in
+    .env|*.env|*secret*|*password*|*credential*|*token*|*auth*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── File size ─────────────────────────────────────────────────
 get_size() { wc -c < "${1}" 2>/dev/null | tr -d ' ' || echo "0"; }
 
@@ -78,6 +86,41 @@ get_checksum() {
     else
       echo "no-checksum"
     fi
+  fi
+}
+
+# ── SHA3-256 checksum — matches D1 clonepool.hash_sha3 column ────────
+# get_checksum() above is SHA-256 (fast, used for local dup detection).
+# This is SHA3-256 specifically, because that's what hash_sha3 means.
+# Never conflate the two — they are different algorithms.
+get_checksum_sha3() {
+  local file="$1"
+  if command -v openssl &>/dev/null && openssl dgst -sha3-256 "${file}" &>/dev/null; then
+    openssl dgst -sha3-256 "${file}" | awk '{print $NF}'
+  elif [[ -n "${PYTHON_CMD}" ]]; then
+    "${PYTHON_CMD}" -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.sha3_256(f.read()).hexdigest())
+" "${file}"
+  else
+    echo ""
+  fi
+}
+
+# ── BLAKE2b checksum — matches D1 clonepool.hash_blake2 column ───────
+get_checksum_blake2() {
+  local file="$1"
+  if command -v openssl &>/dev/null && openssl dgst -blake2b512 "${file}" &>/dev/null; then
+    openssl dgst -blake2b512 "${file}" | awk '{print $NF}'
+  elif [[ -n "${PYTHON_CMD}" ]]; then
+    "${PYTHON_CMD}" -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.blake2b(f.read()).hexdigest())
+" "${file}"
+  else
+    echo ""
   fi
 }
 
@@ -235,6 +278,7 @@ write_sidecar_basic() {
   local sidecar="$1" hex="$2" orig="$3" version="$4"
   local filetype="$5" category_hex="$6" size="$7"
   local backend="${8:-direct}" notes="${9:-}" checksum="${10:-}"
+  local sensitive="${11:-false}"
   local now; now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   mkdir -p "$(dirname "${sidecar}")"
   cat > "${sidecar}" <<SIDECAR
@@ -250,6 +294,7 @@ write_sidecar_basic() {
   "sha256": "${checksum}",
   "backend": "${backend}",
   "notes": "${notes}",
+  "sensitive": ${sensitive},
   "pool_path": "${CLONEPOOL_DIR}/${hex}",
   "companions": [],
   "qr": {
@@ -330,9 +375,75 @@ post_to_d1() {
     || log "WARN" "D1 failed (${http_code}) → ${endpoint}: ${body}"
 }
 
+# ── R2 object upload — actually stores the file bytes ────────────────
+# Metadata (report_clonepool) goes to D1. The FILE ITSELF goes here.
+# Without this call, the clonepool is metadata-only and nothing is
+# ever recoverable from R2 — this was the missing half of the pipeline.
+upload_to_r2() {
+  local hex="$1" filepath="$2"
+  [[ -z "${PHOENIX_AUTH}" ]] && { log "WARN" "PHOENIX_AUTH not set — skipping R2 upload"; return 1; }
+  [[ ! -f "${filepath}" ]] && { log "WARN" "R2 upload: file not found: ${filepath}"; return 1; }
+
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X PUT \
+    -H "Authorization: Bearer ${PHOENIX_AUTH}" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${filepath}" \
+    "${WORKER_URL}/clonepool/${hex}" 2>/dev/null)
+
+  if [[ "${http_code}" == "200" ]]; then
+    log "INFO" "R2 OK → ${hex} (${filepath})"
+    return 0
+  else
+    log "WARN" "R2 upload failed (${http_code}) → ${hex}"
+    return 1
+  fi
+}
+
+# ── R2 object restore — pulls file bytes back when the local ─────────
+# clonepool is missing them (e.g. after a wipe/reinstall). The worker's
+# GET /clonepool/:id returns raw bytes (Content-Type: application/
+# octet-stream) when R2 has the object, but falls back to a JSON D1
+# metadata row (Content-Type: application/json) if R2 doesn't have it —
+# we MUST check Content-Type before trusting the body, or a metadata-only
+# hit gets written to disk as a corrupt "file".
+# Returns 0 and prints the restored path on success, 1 otherwise.
+restore_from_r2() {
+  local hex="$1" dest_path="$2"
+  [[ -z "${PHOENIX_AUTH}" ]] && { log "WARN" "PHOENIX_AUTH not set — skipping R2 restore"; return 1; }
+
+  local tmp_headers; tmp_headers=$(mktemp)
+  local tmp_body; tmp_body=$(mktemp)
+  local http_code
+  http_code=$(curl -s -D "${tmp_headers}" -o "${tmp_body}" -w "%{http_code}" \
+    -H "Authorization: Bearer ${PHOENIX_AUTH}" \
+    "${WORKER_URL}/clonepool/${hex}" 2>/dev/null)
+
+  if [[ "${http_code}" != "200" ]]; then
+    log "WARN" "R2 restore failed (${http_code}) → ${hex}"
+    rm -f "${tmp_headers}" "${tmp_body}"
+    return 1
+  fi
+
+  if ! grep -qi "^content-type: application/octet-stream" "${tmp_headers}"; then
+    log "WARN" "R2 restore: ${hex} has D1 metadata but no R2 bytes — nothing to restore"
+    rm -f "${tmp_headers}" "${tmp_body}"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "${dest_path}")"
+  mv "${tmp_body}" "${dest_path}"
+  rm -f "${tmp_headers}"
+  log "INFO" "R2 restore OK → ${hex} (${dest_path})"
+  return 0
+}
+
 report_clonepool() {
+  # Args: hex name version state pool_path sidecar_path tier size [hash_sha3] [hash_blake2] [original_name] [sensitive]
+  local hash_sha3="${9:-}" hash_blake2="${10:-}" original_name="${11:-${2}}" sensitive="${12:-false}"
   post_to_d1 "/clonepool" \
-    "{\"hex_id\":\"${1}\",\"b58\":\"${1}\",\"name\":\"${2}\",\"version\":\"${3}\",\"state\":\"${4}\",\"pool_path\":\"${5}\",\"sidecar_path\":\"${6}\",\"tier\":${7},\"size\":${8}}"
+    "{\"hex_id\":\"${1}\",\"b58\":\"${1}\",\"name\":\"${2}\",\"original_name\":\"${original_name}\",\"version\":\"${3}\",\"state\":\"${4}\",\"pool_path\":\"${5}\",\"sidecar_path\":\"${6}\",\"tier\":${7},\"size\":${8},\"hash_sha3\":\"${hash_sha3}\",\"hash_blake2\":\"${hash_blake2}\",\"sensitive\":${sensitive}}"
 }
 report_custody() {
   post_to_d1 "/custody" \
@@ -353,6 +464,8 @@ self_register() {
   local self_path; self_path=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${0}")
   local size; size=$(get_size "${self_path}")
   local checksum; checksum=$(get_checksum "${self_path}")
+  local checksum_sha3; checksum_sha3=$(get_checksum_sha3 "${self_path}")
+  local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${self_path}")
   cp "${self_path}" "${dir}/v1_${SCRIPT_NAME}"
   write_sidecar_basic "${dir}/${SCRIPT_HEX}.sidecar.json" \
     "${SCRIPT_HEX}" "${SCRIPT_NAME}" "v1" \
@@ -361,8 +474,10 @@ self_register() {
   custody_log_local "${SCRIPT_HEX}" "${SCRIPT_NAME}" "self_register" "v1" \
     "${self_path}" "${dir}/v1_${SCRIPT_NAME}" "white" "intake"
   report_clonepool "${SCRIPT_HEX}" "${SCRIPT_NAME}" "v1" "white" "${dir}" \
-    "${dir}/${SCRIPT_HEX}.sidecar.json" "1" "${size}"
+    "${dir}/${SCRIPT_HEX}.sidecar.json" "1" "${size}" \
+    "${checksum_sha3}" "${checksum_blake2}" "${SCRIPT_NAME}"
   report_custody  "${SCRIPT_HEX}" "${SCRIPT_NAME}" "self_register" "white" "intake"
+  upload_to_r2 "${SCRIPT_HEX}" "${dir}/v1_${SCRIPT_NAME}"
   report_glossary "${SCRIPT_HEX}" "${SCRIPT_NAME}" \
     "Intake script: registers new software into the glossary and clonepool" \
     "73637269707473" "${VERSION}" "${size}" "${dir}"
@@ -384,6 +499,25 @@ intake_file() {
   local sidecar="${pool_dir}/${hex}.sidecar.json"
 
   mkdir -p "${pool_dir}"
+
+  # ── Sensitive-name check ──────────────────────────────────────
+  local sensitive="false"
+  if is_sensitive_name "${orig}"; then
+    echo ""
+    echo " ⚠  WARNING — SENSITIVE FILE: ${orig}"
+    echo " ⚠  This file will be stored in clonepool AND reported to D1,"
+    echo " ⚠  flagged sensitive=true so downstream consumers can restrict it."
+    echo ""
+    echo "  [1] Proceed — intake and flag sensitive"
+    echo "  [2] Cancel"
+    echo ""
+    read -rp "  Choice [1/2]: " sens_choice
+    if [[ "${sens_choice}" != "1" ]]; then
+      echo " [intake:CANCEL] Sensitive file — intake cancelled"
+      return 0
+    fi
+    sensitive="true"
+  fi
 
   # ── Duplicate check ────────────────────────────────────────
   local dup_result
@@ -424,6 +558,8 @@ intake_file() {
   local category_hex; category_hex=$(filetype_to_category "${filetype}")
   local size; size=$(get_size "${filepath}")
   local checksum; checksum=$(get_checksum "${filepath}")
+  local checksum_sha3; checksum_sha3=$(get_checksum_sha3 "${filepath}")
+  local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${filepath}")
 
   log "INFO" "intaking: ${orig} (${filetype}) as ${version}"
 
@@ -443,15 +579,19 @@ intake_file() {
   log "INFO" "stored: ${pool_dir}/${version}_${orig}"
 
   write_sidecar_basic "${sidecar}" "${hex}" "${orig}" "${version}" \
-    "${filetype}" "${category_hex}" "${size}" "${backend}" "${notes}" "${checksum}"
+    "${filetype}" "${category_hex}" "${size}" "${backend}" "${notes}" "${checksum}" "${sensitive}"
   enrich_sidecar_companions "${sidecar}" "${companion_list}"
   custody_log_local "${hex}" "${orig}" "intake" "${version}" \
     "${filepath}" "${pool_dir}/${version}_${orig}" "white" "${backend}"
   report_clonepool "${hex}" "${orig}" "${version}" "white" \
-    "${pool_dir}" "${sidecar}" "1" "${size}"
+    "${pool_dir}" "${sidecar}" "1" "${size}" \
+    "${checksum_sha3}" "${checksum_blake2}" "${orig}" "${sensitive}"
   report_custody  "${hex}" "${orig}" "intake" "white" "${backend}"
   report_glossary "${hex}" "${orig}" "Intaked via ${backend}: ${filetype}" \
     "${category_hex}" "${version}" "${size}" "${pool_dir}"
+
+  # ── Upload actual file bytes to R2 — this was the missing half ────
+  upload_to_r2 "${hex}" "${pool_dir}/${version}_${orig}"
 
   # ── Auto evict old versions for this file ─────────────────
   evict_old_versions "${pool_dir}" "${orig}" "true"
@@ -483,9 +623,15 @@ intake_clone() {
   local pool_dir="${CLONEPOOL_DIR}/${hex}"
 
   if [[ ! -d "${pool_dir}" ]]; then
-    echo "[intake:MISS] '${name}' not found in clonepool"
-    echo "              Have you intaked it yet? Run: intake ${name}"
-    return 1
+    echo "[intake:MISS] '${name}' not in local clonepool — trying R2..."
+    if restore_from_r2 "${hex}" "${pool_dir}/v1_${name}"; then
+      custody_log_local "${hex}" "${name}" "restore_from_r2" "v1" \
+        "${WORKER_URL}/clonepool/${hex}" "${pool_dir}/v1_${name}" "white" "user"
+    else
+      echo "[intake:MISS] '${name}' not found locally OR in R2"
+      echo "              Have you intaked it yet? Run: intake ${name}"
+      return 1
+    fi
   fi
 
   local latest
@@ -589,15 +735,17 @@ intake_from_backend() {
   local hex; hex=$(to_hex "${pkg_name}")
   local pool_dir="${CLONEPOOL_DIR}/${hex}"
   local sidecar="${pool_dir}/${hex}.sidecar.json"
+  local sensitive="false"
+  is_sensitive_name "${pkg_name}" && sensitive="true"
 
   mkdir -p "${pool_dir}"
   write_sidecar_basic "${sidecar}" "${hex}" "${pkg_name}" "${version}" \
     "package:${backend}" "7061636b61676573" "0" "${backend}" \
-    "installed from ${backend}" ""
+    "installed from ${backend}" "" "${sensitive}"
   custody_log_local "${hex}" "${pkg_name}" "backend_install" "${version}" \
     "${backend}" "${pool_dir}" "white" "${backend}"
   report_clonepool "${hex}" "${pkg_name}" "${version}" "white" \
-    "${pool_dir}" "${sidecar}" "1" "0"
+    "${pool_dir}" "${sidecar}" "1" "0" "${sensitive}"
   report_custody  "${hex}" "${pkg_name}" "backend_install" "white" "${backend}"
   report_glossary "${hex}" "${pkg_name}" "Package installed from ${backend} v${version}" \
     "7061636b61676573" "${version}" "0" "${pool_dir}"
@@ -691,7 +839,7 @@ EOF
 # to be merged into intake.sh v1.5.0 → v1.6.0
 
 # ── Skip patterns for directory intake ───────────────────────
-SKIP_DIRS=("node_modules" ".git" "__pycache__" ".svn" "vendor" "dist" "build" ".next" ".nuxt" "venv" ".venv" "env" ".tox" "coverage" ".nyc_output" "target" "out")
+SKIP_DIRS=("node_modules" ".git" "__pycache__" ".svn" "vendor" "dist" "build" ".next" ".nuxt" "venv" ".venv" "env" ".tox" "coverage" ".nyc_output" "target" "out" ".wrangler" ".idea" ".gradle")
 SKIP_EXTENSIONS=(".jpg" ".jpeg" ".png" ".gif" ".webp" ".svg" ".ico" ".bmp" ".tiff" ".mp4" ".mp3" ".wav" ".avi" ".mov" ".zip" ".tar" ".gz" ".rar" ".7z" ".exe" ".dll" ".so" ".dylib" ".bin" ".dat" ".db" ".sqlite" ".lock")
 
 is_skip_dir() {
@@ -718,7 +866,8 @@ is_known_type() {
   case "${ext}" in
     sh|bash|zsh|py|js|mjs|cjs|ts|json|yaml|yml|toml|env|\
     conf|cfg|ini|service|timer|socket|sql|md|markdown|txt|\
-    xml|html|htm|css|c|h|cpp|hpp|rs|go|ps1) return 0 ;;
+    xml|html|htm|css|c|h|cpp|hpp|rs|go|ps1|\
+    kt|kts|php|gradle|properties|bat|cmd|jsonc|spec) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -774,11 +923,12 @@ intake_directory() {
     for skip in "${SKIP_DIRS[@]}"; do
       if [[ "${rel}" == "${skip}/"* ]] || [[ "${rel}" == *"/${skip}/"* ]]; then
         in_skip=true
-        # Record skip dir once
-        local skip_base="${rel%%/*}"
+        # Record the actual matched skip-pattern name, not the top-level
+        # path component — a hit on nested/__pycache__ should report
+        # "__pycache__", not "nested".
         local already=false
-        for s in "${skipped_dirs[@]:-}"; do [[ "$s" == "$skip_base" ]] && already=true; done
-        [[ "${already}" == "false" ]] && skipped_dirs+=("${skip_base}")
+        for s in "${skipped_dirs[@]:-}"; do [[ "$s" == "$skip" ]] && already=true; done
+        [[ "${already}" == "false" ]] && skipped_dirs+=("${skip}")
         break
       fi
     done
@@ -800,10 +950,7 @@ intake_directory() {
       ext_counts["${ext}"]=$(( ${ext_counts["${ext}"]:-0} + 1 ))
 
       # Flag sensitive files
-      case "$(basename "${f}")" in
-        .env|*.env|*secret*|*password*|*credential*|*token*|*auth*)
-          sensitive_files+=("${rel}") ;;
-      esac
+      is_sensitive_name "${f}" && sensitive_files+=("${rel}")
     else
       skipped_files+=("${rel}")
     fi
@@ -831,7 +978,7 @@ intake_directory() {
     echo "  Skipped  : ${skipped_dirs[*]} (ignored directories)"
   fi
   if (( ${#skipped_files[@]} > 0 )); then
-    echo "  Ignored  : ${#skipped_files[@]} binary/media files"
+    echo "  Ignored  : ${#skipped_files[@]} files (binary/media, or unrecognized extension)"
   fi
 
   echo ""
@@ -887,6 +1034,7 @@ intake_directory() {
   local failed=0
   local dir_manifest="[]"
   local manifest_entries=""
+  local any_sensitive_included=false
 
   for f in "${known_files[@]}"; do
     local rel="${f#${dirpath}/}"
@@ -898,6 +1046,16 @@ intake_directory() {
     local category_hex; category_hex=$(filetype_to_category "${filetype}")
     local size;      size=$(get_size "${f}")
     local checksum;  checksum=$(get_checksum "${f}")
+    local checksum_sha3;   checksum_sha3=$(get_checksum_sha3 "${f}")
+    local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${f}")
+
+    # Was this file flagged sensitive earlier? (already survived the
+    # proceed/exclude gate above — if excluded, it's not in known_files)
+    local file_sensitive="false"
+    for sf in "${sensitive_files[@]}"; do
+      [[ "${rel}" == "${sf}" ]] && file_sensitive="true" && break
+    done
+    [[ "${file_sensitive}" == "true" ]] && any_sensitive_included=true
 
     mkdir -p "${file_pool}"
 
@@ -918,14 +1076,16 @@ intake_directory() {
     local sidecar="${file_pool}/${file_hex}.sidecar.json"
     write_sidecar_basic "${sidecar}" "${file_hex}" "${file_orig}" \
       "${file_version}" "${filetype}" "${category_hex}" "${size}" \
-      "${backend}" "dir:${dirname}/${rel}" "${checksum}"
+      "${backend}" "dir:${dirname}/${rel}" "${checksum}" "${file_sensitive}"
 
     custody_log_local "${file_hex}" "${file_orig}" "dir_intake" \
       "${file_version}" "${f}" "${file_pool}/${file_version}_${file_orig}" \
       "white" "${backend}"
     report_clonepool "${file_hex}" "${file_orig}" "${file_version}" "white" \
-      "${file_pool}" "${sidecar}" "1" "${size}"
+      "${file_pool}" "${sidecar}" "1" "${size}" \
+      "${checksum_sha3}" "${checksum_blake2}" "${file_orig}" "${file_sensitive}"
     report_custody "${file_hex}" "${file_orig}" "dir_intake" "white" "${backend}"
+    upload_to_r2 "${file_hex}" "${file_pool}/${file_version}_${file_orig}"
 
     # Auto evict old versions
     evict_old_versions "${file_pool}" "${file_orig}" "true"
@@ -954,6 +1114,7 @@ intake_directory() {
   "size_bytes": ${total_size},
   "backend": "${backend}",
   "notes": "${notes}",
+  "sensitive": ${any_sensitive_included},
   "pool_path": "${pool_dir}",
   "registered_at": "${now}",
   "updated_at": "${now}",
@@ -967,7 +1128,7 @@ DIRSIDECAR
   custody_log_local "${hex}" "${dirname}" "dir_intake" "${version}" \
     "${dirpath}" "${snapshot_dir}" "white" "${backend}"
   report_clonepool "${hex}" "${dirname}" "${version}" "white" \
-    "${pool_dir}" "${dir_sidecar}" "1" "${total_size}"
+    "${pool_dir}" "${dir_sidecar}" "1" "${total_size}" "${any_sensitive_included}"
   report_custody "${hex}" "${dirname}" "dir_intake" "white" "${backend}"
   report_glossary "${hex}" "${dirname}" \
     "Directory snapshot: ${#known_files[@]} files, ${version}" \

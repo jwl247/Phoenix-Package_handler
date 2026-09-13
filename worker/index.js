@@ -17,8 +17,9 @@ const err = (msg, status = 400) => ok({ error: msg }, status);
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 function isAuthorized(req, env) {
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '').trim();
-  return token && token === env.PHOENIX_AUTH;
+  const authorization = req.headers.get('Authorization') || '';
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return !!match && match[1] === env.PHOENIX_AUTH;
 }
 
 // ── Platform HTML ───────────────────────────────────────────────────────────
@@ -300,7 +301,7 @@ function renderGlossaryEntry(g) {
       '</div>' +
       '<div class="row" style="gap:6px">' +
         '<button class="btn ghost" style="padding:4px 10px;font-size:.78rem" onclick="editGlossaryEntry(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">Edit</button>' +
-        '<button class="btn danger" style="padding:4px 10px;font-size:.78rem" onclick="deleteGlossaryEntry('' + esc(g.hex || g.name) + '')">Delete</button>' +
+        "<button class=\"btn danger\" style=\"padding:4px 10px;font-size:.78rem\" onclick=\"deleteGlossaryEntry('" + esc(g.hex || g.name).replace(/'/g, "\\\\'") + "')\">Delete</button>" +
       '</div>' +
     '</div>' +
     (g.description ? '<p style="margin-top:6px;font-size:.85rem;color:var(--muted)">' + esc(g.description) + '</p>' : '') +
@@ -398,11 +399,11 @@ function renderSubmission(s) {
       '<span class="hex">' + esc((s.hex||'').substring(0,20)) + '...</span>' +
     '</div>' +
     '<div class="vote-row">' +
-      '<button class="btn success" style="padding:5px 12px;font-size:.8rem" onclick="castVote('' + esc(s.hex) + '','approve')">&#10003; Approve</button>' +
-      '<button class="btn danger" style="padding:5px 12px;font-size:.8rem" onclick="castVote('' + esc(s.hex) + '','reject')">&#10007; Reject</button>' +
-      '<button class="btn ghost" style="padding:5px 12px;font-size:.8rem" onclick="castVote('' + esc(s.hex) + '','abstain')">&#x25CB; Abstain</button>' +
-      '<button class="btn ghost" style="padding:5px 12px;font-size:.8rem" onclick="loadVotes('' + esc(s.hex) + '')">View Votes</button>' +
-      (s.status === 'approved' ? '<button class="btn warn" style="padding:5px 12px;font-size:.8rem" onclick="revokeArtifact('' + esc(s.hex) + '')">Revoke</button>' : '') +
+      "<button class=\"btn success\" style=\"padding:5px 12px;font-size:.8rem\" onclick=\"castVote('" + esc(s.hex).replace(/'/g, "\\\\'") + "','approve')\">&#10003; Approve</button>" +
+      "<button class=\"btn danger\" style=\"padding:5px 12px;font-size:.8rem\" onclick=\"castVote('" + esc(s.hex).replace(/'/g, "\\\\'") + "','reject')\">&#10007; Reject</button>" +
+      "<button class=\"btn ghost\" style=\"padding:5px 12px;font-size:.8rem\" onclick=\"castVote('" + esc(s.hex).replace(/'/g, "\\\\'") + "','abstain')\">&#x25CB; Abstain</button>" +
+      "<button class=\"btn ghost\" style=\"padding:5px 12px;font-size:.8rem\" onclick=\"loadVotes('" + esc(s.hex).replace(/'/g, "\\\\'") + "')\">View Votes</button>" +
+      (s.status === 'approved' ? "<button class=\"btn warn\" style=\"padding:5px 12px;font-size:.8rem\" onclick=\"revokeArtifact('" + esc(s.hex).replace(/'/g, "\\\\'") + "')\">Revoke</button>" : '') +
     '</div>' +
     '<div id="votes-' + s.hex + '" style="margin-top:8px"></div>' +
   '</div>';
@@ -587,26 +588,55 @@ export default {
 
         await db.prepare(`
           INSERT INTO clonepool (hex_id, b58, name, original_name, pool_path, sidecar_path,
-            state, tier, size, version)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            state, tier, size, version, hash_sha3, hash_blake2, header_qr, footer_qr,
+            source_path, notes, addr_scheme, sensitive)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(hex_id) DO UPDATE SET
             state = excluded.state,
             version = excluded.version,
+            hash_sha3 = COALESCE(excluded.hash_sha3, clonepool.hash_sha3),
+            hash_blake2 = COALESCE(excluded.hash_blake2, clonepool.hash_blake2),
+            header_qr = COALESCE(excluded.header_qr, clonepool.header_qr),
+            footer_qr = COALESCE(excluded.footer_qr, clonepool.footer_qr),
+            addr_scheme = excluded.addr_scheme,
+            sensitive = excluded.sensitive,
             updated_at = CURRENT_TIMESTAMP
         `).bind(
           body.hex_id,
           body.b58 || body.hex_id,
           body.name,
-          body.original_name|| body.name,
+          body.original_name || body.name,
           body.pool_path || null,
           body.sidecar_path || null,
           body.state || 'white',
           body.tier || 1,
           body.size || 0,
           body.version || 'v1',
+          body.hash_sha3 || null,
+          body.hash_blake2 || null,
+          body.header_qr || null,
+          body.footer_qr || null,
+          body.source_path || null,
+          body.notes || null,
+          (body.hash_sha3 ? 'content-v2' : 'filename-hex-v1'),
+          body.sensitive === true || body.sensitive === 'true' ? 1 : 0,
         ).run();
 
         return ok({ ok: true, hex_id: body.hex_id, name: body.name });
+      }
+
+      // PUT /clonepool/:id — upload the actual file bytes to R2.
+      // This is the route intake.sh's upload_to_r2() calls. Metadata
+      // (above) and bytes (here) are separate on purpose: R2 is the
+      // clonepool, D1 is the catalog. Neither replaces the other.
+      if (path.startsWith('/clonepool/') && req.method === 'PUT') {
+        if (!isAuthorized(req, env)) return err('unauthorized', 401);
+        const hex_id = decodeURIComponent(path.slice(11));
+        if (!hex_id) return err('hex_id required', 400);
+        if (!env.CLONEPOOL_BUCKET) return err('R2 bucket not bound to this worker', 500);
+        const bytes = await req.arrayBuffer();
+        await env.CLONEPOOL_BUCKET.put(hex_id, bytes);
+        return ok({ ok: true, hex_id, bytes: bytes.byteLength });
       }
 
       // GET /custody — ledger view
@@ -669,21 +699,29 @@ export default {
         return ok({ clonepool: result.results, count: result.results.length, filter: state || 'all' });
       }
 
-      if (path.startsWith('/clonepool/') && req.method === 'GET') {
+        if (path.startsWith('/clonepool/') && req.method === 'GET') {
+          if (!isAuthorized(req, env)) return err('unauthorized', 401);
         const id = decodeURIComponent(path.slice(11));
+        if (env.CLONEPOOL_BUCKET) {
+          const obj = await env.CLONEPOOL_BUCKET.get(id);
+          if (obj) {
+            return new Response(obj.body, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
+          }
+        }
         const row = await db
           .prepare('SELECT * FROM clonepool WHERE hex_id = ? OR name = ?')
           .bind(id, id).first();
         return row ? ok(row) : err('not found', 404);
       }
-      // DELETE /clonepool/:id — remove entry by hex_id or name (auth required)
+        // DELETE /clonepool/:id — remove both catalog metadata and R2 bytes.
       if (path.startsWith('/clonepool/') && req.method === 'DELETE') {
         if (!isAuthorized(req, env)) return err('unauthorized', 401);
         const id = decodeURIComponent(path.slice(11));
         if (!id) return err('id required', 400);
-        const existing = await db.prepare('SELECT id FROM clonepool WHERE hex_id = ? OR name = ?').bind(id, id).first();
-        if (!existing) return err('not found', 404);
-        await db.prepare('DELETE FROM clonepool WHERE hex_id = ? OR name = ?').bind(id, id).run();
+          const existing = await db.prepare('SELECT id FROM clonepool WHERE hex_id = ? OR name = ?').bind(id, id).first();
+          if (!existing) return err('not found', 404);
+          if (env.CLONEPOOL_BUCKET) await env.CLONEPOOL_BUCKET.delete(id);
+          await db.prepare('DELETE FROM clonepool WHERE hex_id = ? OR name = ?').bind(id, id).run();
         return ok({ ok: true, deleted: id });
       }
 
@@ -721,7 +759,7 @@ export default {
         const cat = url.searchParams.get('category');
         const params = [];
         const conditions = [];
-        let query = 'SELECT * FROM glossary g';
+        let query = 'SELECT g.*, c.name AS category FROM glossary g LEFT JOIN categories c ON c.hex = g.category_hex';
 
         if (search) { conditions.push('g.name LIKE ?'); params.push(`%${search}%`); }
         if (cat) { conditions.push('c.name = ?'); params.push(cat); }
@@ -732,10 +770,13 @@ export default {
         return ok({ glossary: result.results, count: result.results.length });
       }
 
-      if (path === '/glossary' && req.method === 'POST') {
+        if (path === '/glossary' && req.method === 'POST') {
         if (!isAuthorized(req, env)) return err('unauthorized', 401);
-        const body = await req.json();
-        if (!body.hex || !body.name) return err('hex and name required');
+          const body = await req.json();
+          if (!body.hex || !body.name) return err('hex and name required');
+          const categoryHex = body.category_hex || (body.category
+            ? (await db.prepare('SELECT hex FROM categories WHERE name = ?').bind(body.category).first())?.hex
+            : null);
 
         await db.prepare(`
           INSERT INTO glossary (hex, b58, name, category_hex, description, state, version, platform, backend, size, pool_path, sidecar, notes)
@@ -750,7 +791,7 @@ export default {
           body.hex,
           body.b58 || null,
           body.name,
-          body.category_hex|| null,
+          categoryHex,
           body.description || '',
           body.state || 'white',
           body.version || null,
@@ -773,10 +814,15 @@ export default {
         return row ? ok(row) : err('not found', 404);
       }
 
-      if (path.startsWith('/glossary/') && req.method === 'PUT') {
+        if (path.startsWith('/glossary/') && req.method === 'PUT') {
         if (!isAuthorized(req, env)) return err('unauthorized', 401);
-        const id = decodeURIComponent(path.slice(10));
-        const body = await req.json();
+          const id = decodeURIComponent(path.slice(10));
+          const body = await req.json();
+          const categoryHex = body.category_hex !== undefined
+            ? body.category_hex
+            : (body.category
+              ? (await db.prepare('SELECT hex FROM categories WHERE name = ?').bind(body.category).first())?.hex
+              : null);
 
         await db.prepare(`
           UPDATE glossary SET
@@ -788,7 +834,7 @@ export default {
           WHERE hex = ? OR name = ?
         `).bind(
           body.description ?? null,
-          body.category_hex ?? null,
+          categoryHex,
           body.state ?? null,
           body.notes ?? null,
           id, id,
@@ -967,8 +1013,8 @@ export default {
           body.notes || null,
         ).run();
 
-        // Tally votes — auto-approve if approvals >= threshold (default 2)
-        const threshold = 2;
+        // Votes are advisory. A shared bearer token cannot establish independent
+        // reviewer identities, so it must never auto-approve distributable code.
         const tally = await db.prepare(
           "SELECT vote, COUNT(*) as n FROM reviews WHERE submission_hex = ? GROUP BY vote"
         ).bind(hex).all();
@@ -977,38 +1023,7 @@ export default {
         for (const row of tally.results) counts[row.vote] = row.n;
         const approvals = counts['approve'] || 0;
         const rejections = counts['reject'] || 0;
-
-        let newStatus = null;
-        if (approvals >= threshold) newStatus = 'approved';
-        else if (rejections >= threshold) newStatus = 'rejected';
-
-        if (newStatus) {
-          await db.prepare("UPDATE submissions SET status = ? WHERE hex = ?").bind(newStatus, hex).run();
-
-          // If approved, register in the advertisement feed
-          if (newStatus === 'approved') {
-            const sub = await db.prepare('SELECT * FROM submissions WHERE hex = ?').bind(hex).first();
-            if (sub) {
-              await db.prepare(`
-                INSERT INTO advertisement_feed (hex, name, description, category, platform, approvals, artifact_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(hex) DO UPDATE SET
-                  approvals = excluded.approvals,
-                  advertised_at = CURRENT_TIMESTAMP
-              `).bind(
-                hex,
-                sub.name,
-                sub.description || '',
-                sub.category || null,
-                sub.platform || null,
-                approvals,
-                sub.artifact_url || null,
-              ).run();
-            }
-          }
-        }
-
-        return ok({ ok: true, hex, vote: body.vote, approvals, rejections, status: newStatus || 'pending' });
+        return ok({ ok: true, hex, vote: body.vote, approvals, rejections, status: 'pending' });
       }
 
       // GET /review/:hex/votes — view all votes on a submission
