@@ -61,6 +61,14 @@ log() {
 # ── Hex ───────────────────────────────────────────────────────
 to_hex() { echo -n "$1" | xxd -p | tr -d '\n'; }
 
+# ── Sensitive-name heuristic — shared by single-file and directory intake ──
+is_sensitive_name() {
+  case "$(basename "$1")" in
+    .env|*.env|*secret*|*password*|*credential*|*token*|*auth*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── File size ─────────────────────────────────────────────────
 get_size() { wc -c < "${1}" 2>/dev/null | tr -d ' ' || echo "0"; }
 
@@ -270,6 +278,7 @@ write_sidecar_basic() {
   local sidecar="$1" hex="$2" orig="$3" version="$4"
   local filetype="$5" category_hex="$6" size="$7"
   local backend="${8:-direct}" notes="${9:-}" checksum="${10:-}"
+  local sensitive="${11:-false}"
   local now; now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   mkdir -p "$(dirname "${sidecar}")"
   cat > "${sidecar}" <<SIDECAR
@@ -285,6 +294,7 @@ write_sidecar_basic() {
   "sha256": "${checksum}",
   "backend": "${backend}",
   "notes": "${notes}",
+  "sensitive": ${sensitive},
   "pool_path": "${CLONEPOOL_DIR}/${hex}",
   "companions": [],
   "qr": {
@@ -430,10 +440,10 @@ restore_from_r2() {
 }
 
 report_clonepool() {
-  # Args: hex name version state pool_path sidecar_path tier size [hash_sha3] [hash_blake2] [original_name]
-  local hash_sha3="${9:-}" hash_blake2="${10:-}" original_name="${11:-${2}}"
+  # Args: hex name version state pool_path sidecar_path tier size [hash_sha3] [hash_blake2] [original_name] [sensitive]
+  local hash_sha3="${9:-}" hash_blake2="${10:-}" original_name="${11:-${2}}" sensitive="${12:-false}"
   post_to_d1 "/clonepool" \
-    "{\"hex_id\":\"${1}\",\"b58\":\"${1}\",\"name\":\"${2}\",\"original_name\":\"${original_name}\",\"version\":\"${3}\",\"state\":\"${4}\",\"pool_path\":\"${5}\",\"sidecar_path\":\"${6}\",\"tier\":${7},\"size\":${8},\"hash_sha3\":\"${hash_sha3}\",\"hash_blake2\":\"${hash_blake2}\"}"
+    "{\"hex_id\":\"${1}\",\"b58\":\"${1}\",\"name\":\"${2}\",\"original_name\":\"${original_name}\",\"version\":\"${3}\",\"state\":\"${4}\",\"pool_path\":\"${5}\",\"sidecar_path\":\"${6}\",\"tier\":${7},\"size\":${8},\"hash_sha3\":\"${hash_sha3}\",\"hash_blake2\":\"${hash_blake2}\",\"sensitive\":${sensitive}}"
 }
 report_custody() {
   post_to_d1 "/custody" \
@@ -489,6 +499,25 @@ intake_file() {
   local sidecar="${pool_dir}/${hex}.sidecar.json"
 
   mkdir -p "${pool_dir}"
+
+  # ── Sensitive-name check ──────────────────────────────────────
+  local sensitive="false"
+  if is_sensitive_name "${orig}"; then
+    echo ""
+    echo " ⚠  WARNING — SENSITIVE FILE: ${orig}"
+    echo " ⚠  This file will be stored in clonepool AND reported to D1,"
+    echo " ⚠  flagged sensitive=true so downstream consumers can restrict it."
+    echo ""
+    echo "  [1] Proceed — intake and flag sensitive"
+    echo "  [2] Cancel"
+    echo ""
+    read -rp "  Choice [1/2]: " sens_choice
+    if [[ "${sens_choice}" != "1" ]]; then
+      echo " [intake:CANCEL] Sensitive file — intake cancelled"
+      return 0
+    fi
+    sensitive="true"
+  fi
 
   # ── Duplicate check ────────────────────────────────────────
   local dup_result
@@ -550,13 +579,13 @@ intake_file() {
   log "INFO" "stored: ${pool_dir}/${version}_${orig}"
 
   write_sidecar_basic "${sidecar}" "${hex}" "${orig}" "${version}" \
-    "${filetype}" "${category_hex}" "${size}" "${backend}" "${notes}" "${checksum}"
+    "${filetype}" "${category_hex}" "${size}" "${backend}" "${notes}" "${checksum}" "${sensitive}"
   enrich_sidecar_companions "${sidecar}" "${companion_list}"
   custody_log_local "${hex}" "${orig}" "intake" "${version}" \
     "${filepath}" "${pool_dir}/${version}_${orig}" "white" "${backend}"
   report_clonepool "${hex}" "${orig}" "${version}" "white" \
     "${pool_dir}" "${sidecar}" "1" "${size}" \
-    "${checksum_sha3}" "${checksum_blake2}" "${orig}"
+    "${checksum_sha3}" "${checksum_blake2}" "${orig}" "${sensitive}"
   report_custody  "${hex}" "${orig}" "intake" "white" "${backend}"
   report_glossary "${hex}" "${orig}" "Intaked via ${backend}: ${filetype}" \
     "${category_hex}" "${version}" "${size}" "${pool_dir}"
@@ -706,15 +735,17 @@ intake_from_backend() {
   local hex; hex=$(to_hex "${pkg_name}")
   local pool_dir="${CLONEPOOL_DIR}/${hex}"
   local sidecar="${pool_dir}/${hex}.sidecar.json"
+  local sensitive="false"
+  is_sensitive_name "${pkg_name}" && sensitive="true"
 
   mkdir -p "${pool_dir}"
   write_sidecar_basic "${sidecar}" "${hex}" "${pkg_name}" "${version}" \
     "package:${backend}" "7061636b61676573" "0" "${backend}" \
-    "installed from ${backend}" ""
+    "installed from ${backend}" "" "${sensitive}"
   custody_log_local "${hex}" "${pkg_name}" "backend_install" "${version}" \
     "${backend}" "${pool_dir}" "white" "${backend}"
   report_clonepool "${hex}" "${pkg_name}" "${version}" "white" \
-    "${pool_dir}" "${sidecar}" "1" "0"
+    "${pool_dir}" "${sidecar}" "1" "0" "${sensitive}"
   report_custody  "${hex}" "${pkg_name}" "backend_install" "white" "${backend}"
   report_glossary "${hex}" "${pkg_name}" "Package installed from ${backend} v${version}" \
     "7061636b61676573" "${version}" "0" "${pool_dir}"
@@ -808,7 +839,7 @@ EOF
 # to be merged into intake.sh v1.5.0 → v1.6.0
 
 # ── Skip patterns for directory intake ───────────────────────
-SKIP_DIRS=("node_modules" ".git" "__pycache__" ".svn" "vendor" "dist" "build" ".next" ".nuxt" "venv" ".venv" "env" ".tox" "coverage" ".nyc_output" "target" "out")
+SKIP_DIRS=("node_modules" ".git" "__pycache__" ".svn" "vendor" "dist" "build" ".next" ".nuxt" "venv" ".venv" "env" ".tox" "coverage" ".nyc_output" "target" "out" ".wrangler" ".idea" ".gradle")
 SKIP_EXTENSIONS=(".jpg" ".jpeg" ".png" ".gif" ".webp" ".svg" ".ico" ".bmp" ".tiff" ".mp4" ".mp3" ".wav" ".avi" ".mov" ".zip" ".tar" ".gz" ".rar" ".7z" ".exe" ".dll" ".so" ".dylib" ".bin" ".dat" ".db" ".sqlite" ".lock")
 
 is_skip_dir() {
@@ -835,7 +866,8 @@ is_known_type() {
   case "${ext}" in
     sh|bash|zsh|py|js|mjs|cjs|ts|json|yaml|yml|toml|env|\
     conf|cfg|ini|service|timer|socket|sql|md|markdown|txt|\
-    xml|html|htm|css|c|h|cpp|hpp|rs|go|ps1) return 0 ;;
+    xml|html|htm|css|c|h|cpp|hpp|rs|go|ps1|\
+    kt|kts|php|gradle|properties|bat|cmd|jsonc|spec) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -891,11 +923,12 @@ intake_directory() {
     for skip in "${SKIP_DIRS[@]}"; do
       if [[ "${rel}" == "${skip}/"* ]] || [[ "${rel}" == *"/${skip}/"* ]]; then
         in_skip=true
-        # Record skip dir once
-        local skip_base="${rel%%/*}"
+        # Record the actual matched skip-pattern name, not the top-level
+        # path component — a hit on nested/__pycache__ should report
+        # "__pycache__", not "nested".
         local already=false
-        for s in "${skipped_dirs[@]:-}"; do [[ "$s" == "$skip_base" ]] && already=true; done
-        [[ "${already}" == "false" ]] && skipped_dirs+=("${skip_base}")
+        for s in "${skipped_dirs[@]:-}"; do [[ "$s" == "$skip" ]] && already=true; done
+        [[ "${already}" == "false" ]] && skipped_dirs+=("${skip}")
         break
       fi
     done
@@ -917,10 +950,7 @@ intake_directory() {
       ext_counts["${ext}"]=$(( ${ext_counts["${ext}"]:-0} + 1 ))
 
       # Flag sensitive files
-      case "$(basename "${f}")" in
-        .env|*.env|*secret*|*password*|*credential*|*token*|*auth*)
-          sensitive_files+=("${rel}") ;;
-      esac
+      is_sensitive_name "${f}" && sensitive_files+=("${rel}")
     else
       skipped_files+=("${rel}")
     fi
@@ -948,7 +978,7 @@ intake_directory() {
     echo "  Skipped  : ${skipped_dirs[*]} (ignored directories)"
   fi
   if (( ${#skipped_files[@]} > 0 )); then
-    echo "  Ignored  : ${#skipped_files[@]} binary/media files"
+    echo "  Ignored  : ${#skipped_files[@]} files (binary/media, or unrecognized extension)"
   fi
 
   echo ""
@@ -1004,6 +1034,7 @@ intake_directory() {
   local failed=0
   local dir_manifest="[]"
   local manifest_entries=""
+  local any_sensitive_included=false
 
   for f in "${known_files[@]}"; do
     local rel="${f#${dirpath}/}"
@@ -1017,6 +1048,14 @@ intake_directory() {
     local checksum;  checksum=$(get_checksum "${f}")
     local checksum_sha3;   checksum_sha3=$(get_checksum_sha3 "${f}")
     local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${f}")
+
+    # Was this file flagged sensitive earlier? (already survived the
+    # proceed/exclude gate above — if excluded, it's not in known_files)
+    local file_sensitive="false"
+    for sf in "${sensitive_files[@]}"; do
+      [[ "${rel}" == "${sf}" ]] && file_sensitive="true" && break
+    done
+    [[ "${file_sensitive}" == "true" ]] && any_sensitive_included=true
 
     mkdir -p "${file_pool}"
 
@@ -1037,14 +1076,14 @@ intake_directory() {
     local sidecar="${file_pool}/${file_hex}.sidecar.json"
     write_sidecar_basic "${sidecar}" "${file_hex}" "${file_orig}" \
       "${file_version}" "${filetype}" "${category_hex}" "${size}" \
-      "${backend}" "dir:${dirname}/${rel}" "${checksum}"
+      "${backend}" "dir:${dirname}/${rel}" "${checksum}" "${file_sensitive}"
 
     custody_log_local "${file_hex}" "${file_orig}" "dir_intake" \
       "${file_version}" "${f}" "${file_pool}/${file_version}_${file_orig}" \
       "white" "${backend}"
     report_clonepool "${file_hex}" "${file_orig}" "${file_version}" "white" \
       "${file_pool}" "${sidecar}" "1" "${size}" \
-      "${checksum_sha3}" "${checksum_blake2}" "${file_orig}"
+      "${checksum_sha3}" "${checksum_blake2}" "${file_orig}" "${file_sensitive}"
     report_custody "${file_hex}" "${file_orig}" "dir_intake" "white" "${backend}"
     upload_to_r2 "${file_hex}" "${file_pool}/${file_version}_${file_orig}"
 
@@ -1075,6 +1114,7 @@ intake_directory() {
   "size_bytes": ${total_size},
   "backend": "${backend}",
   "notes": "${notes}",
+  "sensitive": ${any_sensitive_included},
   "pool_path": "${pool_dir}",
   "registered_at": "${now}",
   "updated_at": "${now}",
@@ -1088,7 +1128,7 @@ DIRSIDECAR
   custody_log_local "${hex}" "${dirname}" "dir_intake" "${version}" \
     "${dirpath}" "${snapshot_dir}" "white" "${backend}"
   report_clonepool "${hex}" "${dirname}" "${version}" "white" \
-    "${pool_dir}" "${dir_sidecar}" "1" "${total_size}"
+    "${pool_dir}" "${dir_sidecar}" "1" "${total_size}" "${any_sensitive_included}"
   report_custody "${hex}" "${dirname}" "dir_intake" "white" "${backend}"
   report_glossary "${hex}" "${dirname}" \
     "Directory snapshot: ${#known_files[@]} files, ${version}" \

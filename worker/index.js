@@ -589,8 +589,8 @@ export default {
         await db.prepare(`
           INSERT INTO clonepool (hex_id, b58, name, original_name, pool_path, sidecar_path,
             state, tier, size, version, hash_sha3, hash_blake2, header_qr, footer_qr,
-            source_path, notes, addr_scheme)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_path, notes, addr_scheme, sensitive)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(hex_id) DO UPDATE SET
             state = excluded.state,
             version = excluded.version,
@@ -599,6 +599,7 @@ export default {
             header_qr = COALESCE(excluded.header_qr, clonepool.header_qr),
             footer_qr = COALESCE(excluded.footer_qr, clonepool.footer_qr),
             addr_scheme = excluded.addr_scheme,
+            sensitive = excluded.sensitive,
             updated_at = CURRENT_TIMESTAMP
         `).bind(
           body.hex_id,
@@ -618,6 +619,7 @@ export default {
           body.source_path || null,
           body.notes || null,
           (body.hash_sha3 ? 'content-v2' : 'filename-hex-v1'),
+          body.sensitive === true || body.sensitive === 'true' ? 1 : 0,
         ).run();
 
         return ok({ ok: true, hex_id: body.hex_id, name: body.name });
