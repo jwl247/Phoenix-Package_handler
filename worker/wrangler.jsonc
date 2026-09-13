@@ -1,11 +1,25 @@
 {
-  // packages-worker — Phoenix DevOps OS
+  // packages-worker (STANDALONE DEV COPY — DO NOT DEPLOY, see name below)
   // UnitedSys — United Systems | jwl247
-  // Deploy: wrangler deploy
-  // Tail:   wrangler tail
-  // Secret: wrangler secret put PHOENIX_AUTH
+  //
+  // DEFUSED 2026-09-13: this repo used to share the worker name "packages-
+  // worker" with Phoenix-DevOps-oS/sector2/package-handler/worker/ — the
+  // ACTUAL live one (last real deploy confirmed 2026-09-05 via
+  // `wrangler deployments list`, matching that session's own log). Same
+  // name meant `wrangler deploy` from EITHER repo overwrote the same live
+  // target. This repo's code was 622 lines behind at the time (no
+  // integrity system, no QR gen, no suite-execution gate wiring) — a
+  // deploy from here would have silently destroyed months of monorepo-only
+  // work. Renamed below so that can't happen even by accident.
+  //
+  // If this repo is ever revived as something real, rename it back
+  // deliberately and confirm with Jerry first — don't just delete this
+  // comment and "name" override without understanding why they're here.
+  //
+  // Tail:   wrangler tail (now tails the harmless standalone name, not prod)
+  // Secret: wrangler secret put PHOENIX_AUTH (harmless — different worker)
 
-  "name": "packages-worker",
+  "name": "packages-worker-standalone-DO-NOT-DEPLOY-see-comment",
   "main": "index.js",
   "compatibility_date": "2025-01-01",
 

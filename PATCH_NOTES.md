@@ -19,14 +19,15 @@ Cloudflare plus the locally-fixed worker copy that had diverged from it.
 README.md, PEER_REVIEW.md, .gitignore, install.sh, install.ps1,
 uninstall.ps1, peer-review/schema.sql, .github/workflows/deploy.yml (if present)
 
-## To deploy
-1. Copy this folder over your real sector2/package-handler/ (or the
-   standalone Phoenix-Package_handler repo — they were identical before
-   this patch).
-2. cd worker && wrangler deploy
-   This is the step that actually matters — right now the deployed
-   worker and your local worker/index.js have diverged (both tagged
-   3.4.0, different code). Deploying replaces the broken live version.
+## To deploy — DO NOT follow this as originally written (see 2026-09-13 note)
+~~1. Copy this folder over your real sector2/package-handler/~~
+~~2. cd worker && wrangler deploy~~ — **NEVER do this from this repo.** This
+   worker's name has been changed specifically to make that impossible by
+   accident (`worker/wrangler.jsonc`) — this repo shared the "packages-worker"
+   name with the actual live one in `Phoenix-DevOps-oS/sector2/package-handler/`,
+   and a deploy from here would have overwritten months of monorepo-only work
+   (this patch predates all of it). The canonical pipeline is the monorepo's
+   copy — deploy changes from there, never from here.
 3. Verify: wrangler d1 execute phoenix_dev_db --command \
    "SELECT sql FROM sqlite_master WHERE name='clonepool'"
    Confirm hash_sha3, hash_blake2, header_qr, footer_qr, source_path,
