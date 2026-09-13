@@ -81,6 +81,41 @@ get_checksum() {
   fi
 }
 
+# ── SHA3-256 checksum — matches D1 clonepool.hash_sha3 column ────────
+# get_checksum() above is SHA-256 (fast, used for local dup detection).
+# This is SHA3-256 specifically, because that's what hash_sha3 means.
+# Never conflate the two — they are different algorithms.
+get_checksum_sha3() {
+  local file="$1"
+  if command -v openssl &>/dev/null && openssl dgst -sha3-256 "${file}" &>/dev/null; then
+    openssl dgst -sha3-256 "${file}" | awk '{print $NF}'
+  elif [[ -n "${PYTHON_CMD}" ]]; then
+    "${PYTHON_CMD}" -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.sha3_256(f.read()).hexdigest())
+" "${file}"
+  else
+    echo ""
+  fi
+}
+
+# ── BLAKE2b checksum — matches D1 clonepool.hash_blake2 column ───────
+get_checksum_blake2() {
+  local file="$1"
+  if command -v openssl &>/dev/null && openssl dgst -blake2b512 "${file}" &>/dev/null; then
+    openssl dgst -blake2b512 "${file}" | awk '{print $NF}'
+  elif [[ -n "${PYTHON_CMD}" ]]; then
+    "${PYTHON_CMD}" -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.blake2b(f.read()).hexdigest())
+" "${file}"
+  else
+    echo ""
+  fi
+}
+
 # ── Filetype detection ────────────────────────────────────────
 detect_filetype() {
   local ext="${1##*.}"
@@ -330,9 +365,75 @@ post_to_d1() {
     || log "WARN" "D1 failed (${http_code}) → ${endpoint}: ${body}"
 }
 
+# ── R2 object upload — actually stores the file bytes ────────────────
+# Metadata (report_clonepool) goes to D1. The FILE ITSELF goes here.
+# Without this call, the clonepool is metadata-only and nothing is
+# ever recoverable from R2 — this was the missing half of the pipeline.
+upload_to_r2() {
+  local hex="$1" filepath="$2"
+  [[ -z "${PHOENIX_AUTH}" ]] && { log "WARN" "PHOENIX_AUTH not set — skipping R2 upload"; return 1; }
+  [[ ! -f "${filepath}" ]] && { log "WARN" "R2 upload: file not found: ${filepath}"; return 1; }
+
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X PUT \
+    -H "Authorization: Bearer ${PHOENIX_AUTH}" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${filepath}" \
+    "${WORKER_URL}/clonepool/${hex}" 2>/dev/null)
+
+  if [[ "${http_code}" == "200" ]]; then
+    log "INFO" "R2 OK → ${hex} (${filepath})"
+    return 0
+  else
+    log "WARN" "R2 upload failed (${http_code}) → ${hex}"
+    return 1
+  fi
+}
+
+# ── R2 object restore — pulls file bytes back when the local ─────────
+# clonepool is missing them (e.g. after a wipe/reinstall). The worker's
+# GET /clonepool/:id returns raw bytes (Content-Type: application/
+# octet-stream) when R2 has the object, but falls back to a JSON D1
+# metadata row (Content-Type: application/json) if R2 doesn't have it —
+# we MUST check Content-Type before trusting the body, or a metadata-only
+# hit gets written to disk as a corrupt "file".
+# Returns 0 and prints the restored path on success, 1 otherwise.
+restore_from_r2() {
+  local hex="$1" dest_path="$2"
+  [[ -z "${PHOENIX_AUTH}" ]] && { log "WARN" "PHOENIX_AUTH not set — skipping R2 restore"; return 1; }
+
+  local tmp_headers; tmp_headers=$(mktemp)
+  local tmp_body; tmp_body=$(mktemp)
+  local http_code
+  http_code=$(curl -s -D "${tmp_headers}" -o "${tmp_body}" -w "%{http_code}" \
+    -H "Authorization: Bearer ${PHOENIX_AUTH}" \
+    "${WORKER_URL}/clonepool/${hex}" 2>/dev/null)
+
+  if [[ "${http_code}" != "200" ]]; then
+    log "WARN" "R2 restore failed (${http_code}) → ${hex}"
+    rm -f "${tmp_headers}" "${tmp_body}"
+    return 1
+  fi
+
+  if ! grep -qi "^content-type: application/octet-stream" "${tmp_headers}"; then
+    log "WARN" "R2 restore: ${hex} has D1 metadata but no R2 bytes — nothing to restore"
+    rm -f "${tmp_headers}" "${tmp_body}"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "${dest_path}")"
+  mv "${tmp_body}" "${dest_path}"
+  rm -f "${tmp_headers}"
+  log "INFO" "R2 restore OK → ${hex} (${dest_path})"
+  return 0
+}
+
 report_clonepool() {
+  # Args: hex name version state pool_path sidecar_path tier size [hash_sha3] [hash_blake2] [original_name]
+  local hash_sha3="${9:-}" hash_blake2="${10:-}" original_name="${11:-${2}}"
   post_to_d1 "/clonepool" \
-    "{\"hex_id\":\"${1}\",\"b58\":\"${1}\",\"name\":\"${2}\",\"version\":\"${3}\",\"state\":\"${4}\",\"pool_path\":\"${5}\",\"sidecar_path\":\"${6}\",\"tier\":${7},\"size\":${8}}"
+    "{\"hex_id\":\"${1}\",\"b58\":\"${1}\",\"name\":\"${2}\",\"original_name\":\"${original_name}\",\"version\":\"${3}\",\"state\":\"${4}\",\"pool_path\":\"${5}\",\"sidecar_path\":\"${6}\",\"tier\":${7},\"size\":${8},\"hash_sha3\":\"${hash_sha3}\",\"hash_blake2\":\"${hash_blake2}\"}"
 }
 report_custody() {
   post_to_d1 "/custody" \
@@ -353,6 +454,8 @@ self_register() {
   local self_path; self_path=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${0}")
   local size; size=$(get_size "${self_path}")
   local checksum; checksum=$(get_checksum "${self_path}")
+  local checksum_sha3; checksum_sha3=$(get_checksum_sha3 "${self_path}")
+  local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${self_path}")
   cp "${self_path}" "${dir}/v1_${SCRIPT_NAME}"
   write_sidecar_basic "${dir}/${SCRIPT_HEX}.sidecar.json" \
     "${SCRIPT_HEX}" "${SCRIPT_NAME}" "v1" \
@@ -361,8 +464,10 @@ self_register() {
   custody_log_local "${SCRIPT_HEX}" "${SCRIPT_NAME}" "self_register" "v1" \
     "${self_path}" "${dir}/v1_${SCRIPT_NAME}" "white" "intake"
   report_clonepool "${SCRIPT_HEX}" "${SCRIPT_NAME}" "v1" "white" "${dir}" \
-    "${dir}/${SCRIPT_HEX}.sidecar.json" "1" "${size}"
+    "${dir}/${SCRIPT_HEX}.sidecar.json" "1" "${size}" \
+    "${checksum_sha3}" "${checksum_blake2}" "${SCRIPT_NAME}"
   report_custody  "${SCRIPT_HEX}" "${SCRIPT_NAME}" "self_register" "white" "intake"
+  upload_to_r2 "${SCRIPT_HEX}" "${dir}/v1_${SCRIPT_NAME}"
   report_glossary "${SCRIPT_HEX}" "${SCRIPT_NAME}" \
     "Intake script: registers new software into the glossary and clonepool" \
     "73637269707473" "${VERSION}" "${size}" "${dir}"
@@ -424,6 +529,8 @@ intake_file() {
   local category_hex; category_hex=$(filetype_to_category "${filetype}")
   local size; size=$(get_size "${filepath}")
   local checksum; checksum=$(get_checksum "${filepath}")
+  local checksum_sha3; checksum_sha3=$(get_checksum_sha3 "${filepath}")
+  local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${filepath}")
 
   log "INFO" "intaking: ${orig} (${filetype}) as ${version}"
 
@@ -448,10 +555,14 @@ intake_file() {
   custody_log_local "${hex}" "${orig}" "intake" "${version}" \
     "${filepath}" "${pool_dir}/${version}_${orig}" "white" "${backend}"
   report_clonepool "${hex}" "${orig}" "${version}" "white" \
-    "${pool_dir}" "${sidecar}" "1" "${size}"
+    "${pool_dir}" "${sidecar}" "1" "${size}" \
+    "${checksum_sha3}" "${checksum_blake2}" "${orig}"
   report_custody  "${hex}" "${orig}" "intake" "white" "${backend}"
   report_glossary "${hex}" "${orig}" "Intaked via ${backend}: ${filetype}" \
     "${category_hex}" "${version}" "${size}" "${pool_dir}"
+
+  # ── Upload actual file bytes to R2 — this was the missing half ────
+  upload_to_r2 "${hex}" "${pool_dir}/${version}_${orig}"
 
   # ── Auto evict old versions for this file ─────────────────
   evict_old_versions "${pool_dir}" "${orig}" "true"
@@ -483,9 +594,15 @@ intake_clone() {
   local pool_dir="${CLONEPOOL_DIR}/${hex}"
 
   if [[ ! -d "${pool_dir}" ]]; then
-    echo "[intake:MISS] '${name}' not found in clonepool"
-    echo "              Have you intaked it yet? Run: intake ${name}"
-    return 1
+    echo "[intake:MISS] '${name}' not in local clonepool — trying R2..."
+    if restore_from_r2 "${hex}" "${pool_dir}/v1_${name}"; then
+      custody_log_local "${hex}" "${name}" "restore_from_r2" "v1" \
+        "${WORKER_URL}/clonepool/${hex}" "${pool_dir}/v1_${name}" "white" "user"
+    else
+      echo "[intake:MISS] '${name}' not found locally OR in R2"
+      echo "              Have you intaked it yet? Run: intake ${name}"
+      return 1
+    fi
   fi
 
   local latest
@@ -898,6 +1015,8 @@ intake_directory() {
     local category_hex; category_hex=$(filetype_to_category "${filetype}")
     local size;      size=$(get_size "${f}")
     local checksum;  checksum=$(get_checksum "${f}")
+    local checksum_sha3;   checksum_sha3=$(get_checksum_sha3 "${f}")
+    local checksum_blake2; checksum_blake2=$(get_checksum_blake2 "${f}")
 
     mkdir -p "${file_pool}"
 
@@ -924,8 +1043,10 @@ intake_directory() {
       "${file_version}" "${f}" "${file_pool}/${file_version}_${file_orig}" \
       "white" "${backend}"
     report_clonepool "${file_hex}" "${file_orig}" "${file_version}" "white" \
-      "${file_pool}" "${sidecar}" "1" "${size}"
+      "${file_pool}" "${sidecar}" "1" "${size}" \
+      "${checksum_sha3}" "${checksum_blake2}" "${file_orig}"
     report_custody "${file_hex}" "${file_orig}" "dir_intake" "white" "${backend}"
+    upload_to_r2 "${file_hex}" "${file_pool}/${file_version}_${file_orig}"
 
     # Auto evict old versions
     evict_old_versions "${file_pool}" "${file_orig}" "true"
